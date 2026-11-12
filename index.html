@@ -89,7 +89,9 @@
       <dt>B or Y</dt><dd>Drop the magazine</dd>
       <dt>Other hand</dt><dd>Grip the slide, pull back, let go to chamber</dd>
       <dt>Reload</dt><dd>Push a held magazine into the bottom of the grip</dd>
-      <dt>Desktop</dt><dd>F fire · E rack · Q drop mag · Z load mag from other hand</dd>
+      <dt>Damage sphere</dt><dd>The floating sphere past the bench. Each shot carves an entry, a wound channel and, if the round gets through, an exit wound.</dd>
+      <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
+      <dt>Desktop</dt><dd>F fire · E rack · Q drop mag · X mag from pouch · Z load mag from other hand</dd>
     </dl>
     <h2>Desktop</h2>
     <dl>
@@ -188,6 +190,7 @@ world.defaultContactMaterial.restitution = 0.05;
 const G = { PLAYER: 1, HAND: 2, STATIC: 4, DYN: 8, GUN: 16, DEBRIS: 32 };
 const ALL = 0xffff, NO_PLAYER = ALL & ~G.PLAYER;
 let pistol = null;   // created once the M1911 model loads
+let ammoPouch = null;
 const matWorld = new CANNON.Material('world');
 const matPlayer = new CANNON.Material('player');
 const matHand = new CANNON.Material('hand');
@@ -648,6 +651,7 @@ class PhysHand {
   }
   grab() {
     if (!this.active || this.held || this.anchored) return;
+    if (ammoPouch?.tryGrab(this)) return;
     if (pistol?.tryGrab(this)) return;
     const palm = this.body.pointToWorldFrame(this.body.shapeOffsets[0]);   // centre of the hand
     let best = null, bestD = GRAB_REACH;
@@ -669,16 +673,18 @@ class PhysHand {
       this.anchored = best;
       this.body.type = CANNON.Body.KINEMATIC;
       this.body.velocity.setZero(); this.body.angularVelocity.setZero();
-    } else {
-      const c = new CANNON.LockConstraint(this.body, best.body, { maxForce: 2000 });
-      c.collideConnected = false;
-      world.addConstraint(c);
-      best.body.collisionFilterMask = NO_PLAYER;   // a held prop can't shove the player
-      this.held = { c, d: best };
-    }
+    } else this.holdProp(best);
     this.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.5, 40);
   }
+  holdProp(entry) {
+    const c = new CANNON.LockConstraint(this.body, entry.body, { maxForce: 2000 });
+    c.collideConnected = false;
+    world.addConstraint(c);
+    entry.body.collisionFilterMask = NO_PLAYER;   // a held prop can't shove the player
+    this.held = { c, d: entry };
+  }
   release() {
+    if (this.held?.d?.isMag && ammoPouch?.near(this)) ammoPouch.stow(this);   // let go inside the pouch: put it away
     if (pistol?.holder === this) pistol.drop();
     if (pistol?.slideHand === this) pistol.releaseSlide();
     if (this.anchored) {
@@ -744,6 +750,10 @@ addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') pistol.setTrigger(1);
     if (e.code === 'KeyQ') pistol.ejectMag();
     if (e.code === 'KeyE') pistol.rack();
+    if (e.code === 'KeyX') {   // take a magazine from the pouch with the free hand
+      const h = pistol.holder === hands.left ? hands.right : hands.left;
+      if (!h.held) ammoPouch?.tryGrab(h, true);
+    }
     if (e.code === 'KeyZ') {   // load the magazine held in your other hand
       const h = [hands.left, hands.right].find(h => h.held?.d?.isMag && h !== pistol.holder);
       if (h) pistol.insertMag(h.held.d, h);
@@ -797,6 +807,7 @@ function respawn() {
   player.velocity.setZero();
   yaw = 0; pitch = 0;
   pistol?.reset();
+  damageSphere.reset();
   for (const d of dynamics) {
     if (!d.spawnPos) continue;
     d.body.position.copy(d.spawnPos); d.body.quaternion.copy(d.spawnQuat);
@@ -1396,23 +1407,7 @@ class Pistol {
     }
     this.holder.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1.0, 70);
 
-    // bullet
-    const res = new CANNON.RaycastResult();
-    const from = new CANNON.Vec3(muzzle.x, muzzle.y, muzzle.z);
-    const to = new CANNON.Vec3(muzzle.x + dir.x * 120, muzzle.y + dir.y * 120, muzzle.z + dir.z * 120);
-    world.raycastClosest(from, to, { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, res);
-    if (!res.hasHit) return;
-    const hp = res.hitPointWorld, n = res.hitNormalWorld, b = res.body;
-    const hit = new THREE.Vector3(hp.x, hp.y, hp.z);
-    if (b.mass > 0) {
-      b.applyImpulse(new CANNON.Vec3(dir.x * BULLET_IMPULSE, dir.y * BULLET_IMPULSE, dir.z * BULLET_IMPULSE),
-        new CANNON.Vec3(hp.x - b.position.x, hp.y - b.position.y, hp.z - b.position.z));
-      if (plateBodies.has(b)) playAt(syn.ping, hit, { gain: 1.2, ref: 3, reverb: 0.3, rate: 0.95 + Math.random() * 0.1 });
-      else playAt(syn.thud, hit, { gain: 0.8, ref: 2 });
-    } else {
-      playAt(syn.thud, hit, { gain: 0.9, ref: 2, rate: 0.8 + Math.random() * 0.3 });
-      this.addHole(hit, new THREE.Vector3(n.x, n.y, n.z));
-    }
+    fireBullet(muzzle, dir, { penetration: 0.45, impulse: BULLET_IMPULSE, hole: (p, n) => this.addHole(p, n) });
   }
   addHole(p, n) {
     const m = new THREE.Mesh(_holeGeo, _holeMat);
@@ -1493,6 +1488,7 @@ class Pistol {
     if (this.flashT > 0) { this.flashT -= dt; if (this.flashT <= 0) { this.flash.visible = false; this.light.intensity = 0; } }
     for (const b of this.brass) { b.mesh.position.copy(b.body.position); b.mesh.quaternion.copy(b.body.quaternion); }
   }
+  get magCapacity() { return MAG_CAP; }   // the ammo pouch hands out full magazines of this size
   get ammoText() { return `${this.mag ? this.mag.rounds : '–'}+${this.chambered ? 1 : 0}`; }
 }
 const _hq = new THREE.Quaternion(), _gq = new THREE.Quaternion();
@@ -1527,8 +1523,384 @@ import('./models/m1911.js').then(async ({ glb }) => {
   pistol = new Pistol(parts);
 }).catch(err => console.warn('Pistol model failed to load.', err));
 
+// ---------- ammo pouch ----------
+// Rides on the left hip and follows your body heading. Reach in with the hand that isn't holding a gun
+// and it hands you a full magazine for that gun. Add more guns by giving them spawnMag() + magCapacity.
+const syn_rustle = synth(0.18, (t, lp) => { lp += (noise() - lp) * 0.35; return [lp * Math.exp(-t / 0.05) * (0.6 + 0.4 * Math.sin(t * 160)), lp]; });
+class AmmoPouch {
+  constructor() {
+    this.group = new THREE.Group();
+    const cloth = new THREE.MeshStandardMaterial({ color: '#4b5a3a', roughness: 0.95 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.055), cloth);
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.012, 0.06), new THREE.MeshStandardMaterial({ color: '#3d4a2f', roughness: 0.95 }));
+    flap.position.set(0, 0.07, 0);
+    const strap = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.06), new THREE.MeshStandardMaterial({ color: '#2f3826', roughness: 0.95 }));
+    strap.position.set(0, -0.005, 0.0);
+    const metal = new THREE.MeshStandardMaterial({ color: '#2b2b2b', metalness: 0.6, roughness: 0.4 });
+    for (const x of [-0.025, 0.025]) {   // magazine baseplates poking out
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.022), metal);
+      m.position.set(x, 0.075, 0); this.group.add(m);
+    }
+    this.group.add(box, flap, strap);
+    this.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    scene.add(this.group);
+    this.yaw = 0;
+  }
+  update(dt) {
+    const f = new THREE.Vector3(0, 0, -1).applyQuaternion(headQuatLocal); f.y = 0;
+    if (f.lengthSq() > 1e-4) {
+      f.normalize().applyAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+      const target = Math.atan2(-f.x, -f.z);
+      let d = target - this.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+      this.yaw += Math.abs(d) > 1.6 ? d : d * Math.min(1, dt * 4);   // body turns after the head
+    }
+    const head = _v1.copy(headLocal).applyMatrix4(dolly.matrixWorld);
+    const c = Math.cos(this.yaw), s = Math.sin(this.yaw);
+    const ox = -0.17, oz = -0.07;                                       // left, slightly forward
+    this.group.position.set(head.x + ox * c + oz * s, dolly.position.y + headLocal.y * 0.56, head.z - ox * s + oz * c);
+    this.group.rotation.y = this.yaw;
+  }
+  near(hand) {
+    const hc = hand.body.pointToWorldFrame(hand.body.shapeOffsets[0]);
+    const p = this.group.position;
+    return Math.hypot(hc.x - p.x, hc.y - p.y, hc.z - p.z) < 0.15;
+  }
+  gunFor(hand) {
+    for (const g of [pistol]) if (g?.holder && g.holder !== hand) return g;
+    return null;
+  }
+  tryGrab(hand, force = false) {
+    if (!force && !this.near(hand)) return false;
+    const gun = this.gunFor(hand);
+    if (!gun) {   // nothing to load: a short double buzz
+      hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.25, 25);
+      setTimeout(() => hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.25, 25), 90);
+      return !!force;
+    }
+    // the magazine appears in the fist, top toward the thumb so it's ready to push into the grip
+    const hb = hand.body;
+    const hq = _hq.set(hb.quaternion.x, hb.quaternion.y, hb.quaternion.z, hb.quaternion.w);
+    const q = _gq.copy(hq).multiply(_magInFist);
+    const pos = _v2.set(0, 0, -0.025).applyQuaternion(hq).add(_v1.set(hb.position.x, hb.position.y, hb.position.z));
+    const entry = gun.spawnMag(pos, q, gun.magCapacity, new THREE.Vector3(hb.velocity.x, hb.velocity.y, hb.velocity.z));
+    hand.holdProp(entry);
+    playAt(syn_rustle, this.group.position, { gain: 0.6, ref: 0.5 });
+    hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.45, 35);
+    return true;
+  }
+  stow(hand) {
+    const e = hand.held.d;
+    world.removeConstraint(hand.held.c);
+    hand.held = null;
+    pistol?.removeMag(e);
+    playAt(syn_rustle, this.group.position, { gain: 0.5, ref: 0.5, rate: 0.85 });
+  }
+}
+const _magInFist = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+ammoPouch = new AmmoPouch();
+
+// ---------- procedural damage ----------
+// A DamageVolume is a voxel signed-distance field (negative = solid) in its own local space, meshed with
+// surface nets in 16³ chunks. Bullets march through the field: each shot carves an entry crater, a wound
+// channel for as far as the round's penetration budget lasts (empty space from earlier shots costs
+// nothing, so repeat shots dig deeper), and a flared exit wound if it gets out the far side.
+//
+// For NPCs: build one volume per rigid body part (head, chest, upper arm...) from an SDF that fits it,
+// parent `volume.object` to that bone, and the damage moves with the bone. Keep the parent scale at 1.
+// `onHit(info)` reports entry/exit points, channel length and whether it exited, for health logic.
+const damageables = [];
+const _dmgInv = new THREE.Matrix4();
+class DamageVolume {
+  constructor({ sdf, min, max, voxel = 0.011, skin = '#cbbba8', flesh = '#8e2a24', deep = '#3e0d0b', onHit = null }) {
+    this.sdf = sdf; this.h = voxel; this.onHit = onHit;
+    this.min = new THREE.Vector3(...min);
+    const size = new THREE.Vector3(...max).sub(this.min);
+    this.N = [Math.ceil(size.x / voxel), Math.ceil(size.y / voxel), Math.ceil(size.z / voxel)];
+    this.P = this.N.map(n => n + 1);
+    this.f = new Float32Array(this.P[0] * this.P[1] * this.P[2]);
+    for (let k = 0; k < this.P[2]; k++) for (let j = 0; j < this.P[1]; j++) for (let i = 0; i < this.P[0]; i++)
+      this.f[this.idx(i, j, k)] = sdf(this.min.x + i * voxel, this.min.y + j * voxel, this.min.z + k * voxel);
+    this.base = this.f.slice();
+    this.C = 16;
+    this.CN = this.N.map(n => Math.ceil(n / this.C));
+    this.colors = { skin: new THREE.Color(skin), flesh: new THREE.Color(flesh), deep: new THREE.Color(deep) };
+    this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0 });
+    this.object = new THREE.Group();
+    this.meshes = new Map();
+    this.dirty = new Set();
+    for (let cz = 0; cz < this.CN[2]; cz++) for (let cy = 0; cy < this.CN[1]; cy++) for (let cx = 0; cx < this.CN[0]; cx++)
+      this.buildChunk(cx, cy, cz);
+    damageables.push(this);
+  }
+  idx(i, j, k) { return (k * this.P[1] + j) * this.P[0] + i; }
+  reset() {
+    this.f.set(this.base);
+    for (let cz = 0; cz < this.CN[2]; cz++) for (let cy = 0; cy < this.CN[1]; cy++) for (let cx = 0; cx < this.CN[0]; cx++)
+      this.buildChunk(cx, cy, cz);
+  }
+  sampleArr(a, x, y, z) {
+    const h = this.h;
+    let gx = (x - this.min.x) / h, gy = (y - this.min.y) / h, gz = (z - this.min.z) / h;
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= this.N[0] || gy >= this.N[1] || gz >= this.N[2]) return h * 4;   // outside: air
+    const i = gx | 0, j = gy | 0, k = gz | 0, fx = gx - i, fy = gy - j, fz = gz - k;
+    const P0 = this.P[0], P01 = P0 * this.P[1], o = (k * this.P[1] + j) * P0 + i;
+    const c00 = a[o] + (a[o + 1] - a[o]) * fx, c10 = a[o + P0] + (a[o + P0 + 1] - a[o + P0]) * fx;
+    const c01 = a[o + P01] + (a[o + P01 + 1] - a[o + P01]) * fx, c11 = a[o + P01 + P0] + (a[o + P01 + P0 + 1] - a[o + P01 + P0]) * fx;
+    const c0 = c00 + (c10 - c00) * fy, c1 = c01 + (c11 - c01) * fy;
+    return c0 + (c1 - c0) * fz;
+  }
+  sample(x, y, z) { return this.sampleArr(this.f, x, y, z); }
+  // ---- meshing: naive surface nets, one mesh per chunk ----
+  buildChunk(cx, cy, cz) {
+    const C = this.C, N = this.N, f = this.f, h = this.h, mn = this.min;
+    const i0 = cx * C, j0 = cy * C, k0 = cz * C;
+    const i1 = Math.min(N[0], i0 + C), j1 = Math.min(N[1], j0 + C), k1 = Math.min(N[2], k0 + C);
+    const ci0 = Math.max(0, i0 - 1), cj0 = Math.max(0, j0 - 1), ck0 = Math.max(0, k0 - 1);
+    const W = i1 - ci0, Hh = j1 - cj0, D = k1 - ck0;
+    const vid = new Int32Array(W * Hh * D).fill(-1);
+    const pos = [], nor = [], col = [], ind = [];
+    const v = new Float32Array(8);
+    const P0 = this.P[0], P01 = P0 * this.P[1];
+    const corner = [0, 1, P0, P0 + 1, P01, P01 + 1, P01 + P0, P01 + P0 + 1];
+    for (let k = ck0; k < k1; k++) for (let j = cj0; j < j1; j++) for (let i = ci0; i < i1; i++) {
+      const o = this.idx(i, j, k);
+      let mask = 0;
+      for (let c = 0; c < 8; c++) { v[c] = f[o + corner[c]]; if (v[c] < 0) mask |= 1 << c; }
+      if (mask === 0 || mask === 255) continue;
+      let sx = 0, sy = 0, sz = 0, cnt = 0;
+      for (let a = 0; a < 8; a++) for (let bit = 1; bit < 8; bit <<= 1) {
+        if (a & bit) continue;
+        const b = a | bit;
+        if ((v[a] < 0) === (v[b] < 0)) continue;
+        const t = v[a] / (v[a] - v[b]);
+        sx += (a & 1) + (bit === 1 ? t : 0); sy += ((a >> 1) & 1) + (bit === 2 ? t : 0); sz += ((a >> 2) & 1) + (bit === 4 ? t : 0);
+        cnt++;
+      }
+      const x = mn.x + (i + sx / cnt) * h, y = mn.y + (j + sy / cnt) * h, z = mn.z + (k + sz / cnt) * h;
+      vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)] = pos.length / 3;
+      pos.push(x, y, z);
+      // normal from the field gradient (points out of the solid)
+      let nx = this.sample(x + h, y, z) - this.sample(x - h, y, z);
+      let ny = this.sample(x, y + h, z) - this.sample(x, y - h, z);
+      let nz = this.sample(x, y, z + h) - this.sample(x, y, z - h);
+      const nl = Math.hypot(nx, ny, nz) || 1; nor.push(nx / nl, ny / nl, nz / nl);
+      // colour by how far below the original surface this point is: skin -> wound -> deep tissue
+      const depth = -this.sampleArr(this.base, x, y, z);
+      const w1 = THREE.MathUtils.smoothstep(depth, 0.002, 0.009), w2 = THREE.MathUtils.smoothstep(depth, 0.03, 0.13);
+      _dc.copy(this.colors.skin).lerp(this.colors.flesh, w1).lerp(this.colors.deep, w2);
+      col.push(_dc.r, _dc.g, _dc.b);
+    }
+    const V = (i, j, k) => vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)];
+    for (let k = k0; k < k1; k++) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+      const o = this.idx(i, j, k), inside = f[o] < 0;
+      // x edge: cells (i, j-1..j, k-1..k)
+      if (j > 0 && k > 0 && inside !== (f[o + 1] < 0)) this.quad(ind, inside, V(i, j - 1, k - 1), V(i, j, k - 1), V(i, j, k), V(i, j - 1, k));
+      if (i > 0 && k > 0 && inside !== (f[o + P0] < 0)) this.quad(ind, inside, V(i - 1, j, k - 1), V(i - 1, j, k), V(i, j, k), V(i, j, k - 1));
+      if (i > 0 && j > 0 && inside !== (f[o + P01] < 0)) this.quad(ind, inside, V(i - 1, j - 1, k), V(i, j - 1, k), V(i, j, k), V(i - 1, j, k));
+    }
+    const key = `${cx},${cy},${cz}`;
+    let mesh = this.meshes.get(key);
+    if (!ind.length) { if (mesh) { this.object.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); } return; }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(pos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(ind, 1) : new THREE.Uint16BufferAttribute(ind, 1));
+    g.computeBoundingSphere();
+    if (mesh) { mesh.geometry.dispose(); mesh.geometry = g; }
+    else { mesh = new THREE.Mesh(g, this.material); mesh.castShadow = mesh.receiveShadow = true; this.object.add(mesh); this.meshes.set(key, mesh); }
+  }
+  quad(ind, inside, a, b, c, d) {
+    if (a < 0 || b < 0 || c < 0 || d < 0) return;
+    if (inside) ind.push(a, b, c, a, c, d); else ind.push(a, c, b, a, d, c);
+  }
+  // ---- carving ----
+  carveCapsule(a, b, r) {
+    const h = this.h, mn = this.min, f = this.f;
+    const lo = [Math.min(a.x, b.x) - r - h, Math.min(a.y, b.y) - r - h, Math.min(a.z, b.z) - r - h];
+    const hi = [Math.max(a.x, b.x) + r + h, Math.max(a.y, b.y) + r + h, Math.max(a.z, b.z) + r + h];
+    const mnA = [mn.x, mn.y, mn.z];
+    const I0 = lo.map((v, ax) => Math.max(0, Math.floor((v - mnA[ax]) / h)));
+    const I1 = hi.map((v, ax) => Math.min(this.N[ax], Math.ceil((v - mnA[ax]) / h)));
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z, ab2 = abx * abx + aby * aby + abz * abz || 1e-9;
+    for (let k = I0[2]; k <= I1[2]; k++) for (let j = I0[1]; j <= I1[1]; j++) for (let i = I0[0]; i <= I1[0]; i++) {
+      const x = mn.x + i * h, y = mn.y + j * h, z = mn.z + k * h;
+      let t = ((x - a.x) * abx + (y - a.y) * aby + (z - a.z) * abz) / ab2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dx = x - (a.x + abx * t), dy = y - (a.y + aby * t), dz = z - (a.z + abz * t);
+      const carve = r - Math.sqrt(dx * dx + dy * dy + dz * dz);   // >0 inside the cutter
+      const o = this.idx(i, j, k);
+      if (carve > f[o]) f[o] = carve;
+    }
+    for (let cz = Math.max(0, ((I0[2] - 1) / this.C) | 0); cz <= Math.min(this.CN[2] - 1, ((I1[2] + 1) / this.C) | 0); cz++)
+      for (let cy = Math.max(0, ((I0[1] - 1) / this.C) | 0); cy <= Math.min(this.CN[1] - 1, ((I1[1] + 1) / this.C) | 0); cy++)
+        for (let cx = Math.max(0, ((I0[0] - 1) / this.C) | 0); cx <= Math.min(this.CN[0] - 1, ((I1[0] + 1) / this.C) | 0); cx++)
+          this.dirty.add(`${cx},${cy},${cz}`);
+  }
+  carveSphere(p, r) { this.carveCapsule(p, p, r); }
+  flush() {
+    for (const key of this.dirty) { const [x, y, z] = key.split(',').map(Number); this.buildChunk(x, y, z); }
+    this.dirty.clear();
+  }
+  // ---- ray marching ----
+  toLocalRay(o, d) {
+    this.object.updateWorldMatrix(true, false);
+    _dmgInv.copy(this.object.matrixWorld).invert();
+    return [o.clone().applyMatrix4(_dmgInv), d.clone().transformDirection(_dmgInv)];
+  }
+  rayBox(o, d) {
+    let t0 = 0, t1 = Infinity;
+    const mx = [this.min.x + this.N[0] * this.h, this.min.y + this.N[1] * this.h, this.min.z + this.N[2] * this.h];
+    const mn = [this.min.x, this.min.y, this.min.z], oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
+    for (let a = 0; a < 3; a++) {
+      if (Math.abs(dd[a]) < 1e-9) { if (oo[a] < mn[a] || oo[a] > mx[a]) return null; continue; }
+      let ta = (mn[a] - oo[a]) / dd[a], tb = (mx[a] - oo[a]) / dd[a];
+      if (ta > tb) [ta, tb] = [tb, ta];
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+      if (t0 > t1) return null;
+    }
+    return [t0, t1];
+  }
+  refine(o, d, ta, tb, wantSolid) {
+    for (let n = 0; n < 8; n++) {
+      const tm = (ta + tb) / 2;
+      const solid = this.sample(o.x + d.x * tm, o.y + d.y * tm, o.z + d.z * tm) < 0;
+      if (solid === wantSolid) tb = tm; else ta = tm;
+    }
+    return tb;
+  }
+  hitTest(worldO, worldD, maxDist = Infinity) {
+    const [o, d] = this.toLocalRay(worldO, worldD);
+    const span = this.rayBox(o, d);
+    if (!span || span[0] > maxDist) return Infinity;
+    const step = this.h * 0.5;
+    for (let t = span[0]; t <= Math.min(span[1], maxDist); t += step)
+      if (this.sample(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t) < 0) return t;
+    return Infinity;
+  }
+  shoot(worldO, worldD, penetration, { entryR = 0.016, channelR = 0.012, exitR = 0.03 } = {}) {
+    const [o, d] = this.toLocalRay(worldO, worldD);
+    const span = this.rayBox(o, d);
+    if (!span) return null;
+    const step = this.h * 0.5;
+    let remaining = penetration, entryT = null, exitT = null, stopT = null;
+    let prevSolid = false, t = span[0];
+    for (; t <= span[1]; t += step) {
+      const solid = this.sample(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t) < 0;
+      if (solid && !prevSolid && entryT === null) entryT = this.refine(o, d, t - step, t, true);
+      if (!solid && prevSolid) exitT = this.refine(o, d, t - step, t, false);
+      if (solid) { remaining -= step; if (remaining <= 0) { stopT = t; break; } }
+      prevSolid = solid;
+    }
+    if (entryT === null) return null;
+    const P = (tt) => new THREE.Vector3(o.x + d.x * tt, o.y + d.y * tt, o.z + d.z * tt);
+    const entry = P(entryT);
+    const exited = stopT === null && exitT !== null;
+    const end = exited ? P(exitT) : P(stopT ?? exitT ?? entryT);
+    // entry: a small crater, then the channel
+    this.carveSphere(P(entryT + 0.004), entryR);
+    this.carveCapsule(entry, end, channelR);
+    if (exited) {
+      // exit wound: tissue gets pushed out ahead of the round, so the far side blows out wider and ragged
+      this.carveCapsule(P(exitT - 0.035), P(exitT + 0.01), exitR * 0.75);
+      this.carveSphere(end, exitR);
+      const u = new THREE.Vector3(d.y, -d.x, 0); if (u.lengthSq() < 1e-6) u.set(1, 0, 0); u.normalize();
+      const w = new THREE.Vector3().crossVectors(d, u);
+      for (let n = 0; n < 4; n++) {
+        const a = Math.random() * Math.PI * 2, rr = exitR * (0.6 + Math.random() * 0.5);
+        this.carveSphere(end.clone().addScaledVector(u, Math.cos(a) * rr).addScaledVector(w, Math.sin(a) * rr).addScaledVector(d, -0.008), exitR * 0.45);
+      }
+    } else this.carveSphere(end, channelR * 1.6);    // round stops: small temporary cavity
+    this.flush();
+
+    const M = this.object.matrixWorld;
+    const info = {
+      entry: entry.clone().applyMatrix4(M), exitPoint: exited ? end.clone().applyMatrix4(M) : null,
+      exited, remaining: Math.max(0, remaining), channel: penetration - Math.max(0, remaining),
+      dirWorld: worldD.clone(), volume: this,
+    };
+    spawnDebris(info.entry, worldD.clone().negate(), 6);
+    if (exited) spawnDebris(info.exitPoint, worldD, 14);
+    playAt(syn.thud, info.entry, { gain: 1.0, ref: 2, rate: 0.55 + Math.random() * 0.1 });
+    this.onHit?.(info);
+    return info;
+  }
+}
+const _dc = new THREE.Color();
+
+// little chunks that fly out of entry and exit wounds (visual only)
+const debris = [];
+const _debrisGeo = new THREE.BoxGeometry(0.008, 0.008, 0.008);
+const _debrisMat = new THREE.MeshStandardMaterial({ color: '#7a1f1a', roughness: 0.6 });
+function spawnDebris(p, dir, n) {
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Mesh(_debrisGeo, _debrisMat);
+    m.position.copy(p); m.scale.setScalar(0.6 + Math.random() * 1.4);
+    const v = dir.clone().multiplyScalar(1.5 + Math.random() * 2.5)
+      .add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.3, Math.random() - 0.5).multiplyScalar(1.6));
+    scene.add(m);
+    debris.push({ m, v, life: 1.5 });
+  }
+  while (debris.length > 160) scene.remove(debris.shift().m);
+}
+function updateDebris(dt) {
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const d = debris[i];
+    d.life -= dt;
+    d.v.y -= GRAVITY * dt;
+    d.m.position.addScaledVector(d.v, dt);
+    if (d.m.position.y < 0.005) { d.m.position.y = 0.005; d.v.set(0, 0, 0); }
+    d.m.rotation.x += dt * 9; d.m.rotation.z += dt * 7;
+    if (d.life <= 0) { scene.remove(d.m); debris.splice(i, 1); }
+  }
+}
+
+// Bullets: the nearest of the physics world and the damage volumes takes the hit. A round that exits a
+// volume keeps going with what's left of its penetration.
+function fireBullet(origin, dir, o, depth = 0) {
+  const res = new CANNON.RaycastResult();
+  const from = new CANNON.Vec3(origin.x, origin.y, origin.z);
+  const to = new CANNON.Vec3(origin.x + dir.x * 120, origin.y + dir.y * 120, origin.z + dir.z * 120);
+  world.raycastClosest(from, to, { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, res);
+  let best = null, bestT = res.hasHit ? res.distance : Infinity;
+  for (const v of damageables) { const t = v.hitTest(origin, dir, bestT); if (t < bestT) { bestT = t; best = v; } }
+  if (best) {
+    const r = best.shoot(origin, dir, o.penetration);
+    if (r?.exited && depth < 4) fireBullet(r.exitPoint.clone().addScaledVector(dir, 0.003), dir, { ...o, penetration: r.remaining * 0.8 }, depth + 1);
+    return;
+  }
+  if (!res.hasHit) return;
+  const hp = res.hitPointWorld, n = res.hitNormalWorld, b = res.body;
+  const hit = new THREE.Vector3(hp.x, hp.y, hp.z);
+  if (b.mass > 0) {
+    b.applyImpulse(new CANNON.Vec3(dir.x * o.impulse, dir.y * o.impulse, dir.z * o.impulse),
+      new CANNON.Vec3(hp.x - b.position.x, hp.y - b.position.y, hp.z - b.position.z));
+    if (plateBodies.has(b)) playAt(syn.ping, hit, { gain: 1.2, ref: 3, reverb: 0.3, rate: 0.95 + Math.random() * 0.1 });
+    else playAt(syn.thud, hit, { gain: 0.8, ref: 2 });
+  } else {
+    playAt(syn.thud, hit, { gain: 0.9, ref: 2, rate: 0.8 + Math.random() * 0.3 });
+    o.hole?.(hit, new THREE.Vector3(n.x, n.y, n.z));
+  }
+}
+
+// Test target: a 0.7 m sphere (bigger than one round can get through) that slowly turns and bobs,
+// so damage has to stay put in the object's own space, the way it will on a moving NPC.
+const DMG_R = 0.35;
+const damageSphere = new DamageVolume({
+  sdf: (x, y, z) => Math.hypot(x, y, z) - DMG_R,
+  min: [-DMG_R - 0.03, -DMG_R - 0.03, -DMG_R - 0.03], max: [DMG_R + 0.03, DMG_R + 0.03, DMG_R + 0.03],
+  onHit: (info) => { damageSphere.hits = (damageSphere.hits || 0) + 1; },
+});
+damageSphere.object.position.set(-9.5, 1.45, 0.2);
+scene.add(damageSphere.object);
+let dmgTime = 0;
+function updateDamageTargets(dt) {
+  dmgTime += dt;
+  damageSphere.object.rotation.y += dt * 0.25;
+  damageSphere.object.position.y = 1.45 + Math.sin(dmgTime * 0.8) * 0.05;
+}
+
 // debug handle for console tinkering
-window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, actx, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, actx, damageSphere, ammoPouch, fireBullet, THREE, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -1577,6 +1949,9 @@ function frame(dt, draw) {
     hand.sync();
   }
   pistol?.update(dt);
+  ammoPouch.update(dt);
+  updateDamageTargets(dt);
+  updateDebris(dt);
   for (const d of dynamics) { d.mesh.position.copy(d.body.position); d.mesh.quaternion.copy(d.body.quaternion); }
   if (draw) updateListener();
 
