@@ -1,0 +1,1603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html,body{margin:0}</style>
+</head>
+<body>
+<title>Vaultyard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+  /* Layout: full-bleed 3D canvas, one floating briefing card, VR button bottom-centre */
+  :root {
+    --ink: #0f1a1f;
+    --panel: rgba(13, 24, 29, 0.86);
+    --line: rgba(160, 220, 210, 0.22);
+    --text: #e8f2ef;
+    --muted: #9fb7b1;
+    --accent: #ffb547;
+    --cool: #5fd4c4;
+    --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; overflow: hidden; }
+  body { background: var(--ink); color: var(--text); font-family: var(--body); }
+  canvas { display: block; }
+  #brief {
+    position: fixed; z-index: 5;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    left: max(16px, env(safe-area-inset-left, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    max-width: 420px; padding: 20px 22px 18px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    backdrop-filter: blur(6px); cursor: pointer;
+    max-height: calc(100% - 32px - env(safe-area-inset-top, 0px)); overflow-y: auto;
+  }
+  #brief h1 {
+    font-family: var(--display); font-weight: 700; font-size: 30px; letter-spacing: 0.04em;
+    margin: 0 0 2px; text-transform: uppercase;
+  }
+  #brief h1 span { color: var(--accent); }
+  #brief .tag { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  #brief h2 {
+    font-family: var(--display); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--cool); margin: 14px 0 6px; font-weight: 500;
+  }
+  #brief dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; font-size: 13.5px; }
+  #brief dt { color: var(--accent); font-family: var(--display); font-weight: 500; white-space: nowrap; }
+  #brief dd { margin: 0; color: var(--text); }
+  #brief .go {
+    margin-top: 16px; font-family: var(--display); font-size: 13px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink); background: var(--accent);
+    display: inline-block; padding: 7px 12px; border-radius: 3px;
+  }
+  #brief.min { max-width: 260px; padding: 10px 14px; cursor: default; background: rgba(13,24,29,0.6); }
+  #brief.min .full { display: none; }
+  #brief:not(.min) .mini { display: none; }
+  #brief .mini { font-size: 12px; color: var(--muted); }
+  #status {
+    position: fixed; z-index: 5; right: max(16px, env(safe-area-inset-right, 0px));
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    font-family: var(--display); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+    padding: 6px 10px; border-radius: 4px; font-variant-numeric: tabular-nums;
+  }
+  #status b { color: var(--accent); font-weight: 500; }
+  @media (max-width: 640px) { #status { display: none; } }
+</style>
+
+<div id="brief">
+  <div class="full">
+    <h1>Vault<span>yard</span></h1>
+    <p class="tag">Run, jump and climb the course. Your hands are solid and push back: brace on walls to shove yourself, grip ledges to climb.</p>
+    <h2>Quest / VR controllers</h2>
+    <dl>
+      <dt>Left stick</dt><dd>Move (head-relative)</dd>
+      <dt>Left stick click</dt><dd>Sprint toggle</dd>
+      <dt>A or X</dt><dd>Jump</dd>
+      <dt>Right stick</dt><dd>Snap turn 30°</dd>
+      <dt>Grip</dt><dd>Grab props, or grip any surface and pull to climb</dd>
+    </dl>
+    <h2>Pistol (bench by the range)</h2>
+    <dl>
+      <dt>Grip near it</dt><dd>Picks it up by the grip</dd>
+      <dt>Trigger</dt><dd>Fire</dd>
+      <dt>B or Y</dt><dd>Drop the magazine</dd>
+      <dt>Other hand</dt><dd>Grip the slide, pull back, let go to chamber</dd>
+      <dt>Reload</dt><dd>Push a held magazine into the bottom of the grip</dd>
+      <dt>Desktop</dt><dd>F fire · E rack · Q drop mag · Z load mag from other hand</dd>
+    </dl>
+    <h2>Desktop</h2>
+    <dl>
+      <dt>WASD + mouse</dt><dd>Move and look</dd>
+      <dt>Shift / Space</dt><dd>Sprint / Jump</dd>
+      <dt>Mouse L / R</dt><dd>Grab with right / left hand</dd>
+      <dt>Wheel</dt><dd>Hand reach</dd>
+      <dt>R</dt><dd>Respawn</dd>
+    </dl>
+    <span class="go">Click to play</span>
+    <p class="tag" style="margin:12px 0 0;font-size:11px">Hand models: WebXR Input Profiles generic-hand, MIT, © 2019 Amazon. M1911 model: Emi @ Violence, CC0. Gunshot recording: Vincent Sevedge, CC-BY 3.0. Reload recording: zer0_sol, CC0.</p>
+  </div>
+  <div class="mini">Esc to release mouse · R respawn</div>
+</div>
+<div id="status">Speed <b id="spd">0.0</b> m/s · <b id="mode">Walk</b> · Ammo <b id="ammo">–</b></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
+import * as CANNON from 'cannon-es';
+
+// ---------- tuning ----------
+const H = 1 / 90;              // physics step
+const GRAVITY = 9.82;
+const WALK = 3.6, SPRINT = 7.2;
+const JUMP_V = 5.4;
+const COYOTE = 0.12, JUMP_BUFFER = 0.15;
+const HAND_MAX_W = 40, HAND_SNAP_DIST = 0.6;
+// arm springs (N/m, N·s/m, N). Hand mass 1.5 kg, body 70 kg.
+const HAND_K = 4000, HAND_C = 2 * Math.sqrt(HAND_K * 1.5), HAND_FMAX = 1200, HAND_BRACE_C = 350;
+const CLIMB_K = 8000, CLIMB_C = 2 * 0.8 * Math.sqrt(CLIMB_K * 72), CLIMB_FMAX = 1800, CLIMB_BREAK_DIST = 0.9;
+const GRAB_REACH = 0.1;          // grip reach from the centre of the hand collider
+const TRACTION = 30, TRACTION_BRACING = 4, AIR_CONTROL = 5;
+const TUCK_TO = 1.15;           // while climbing, the leg spheres fold up to chest height so you can get over a ledge
+const PR = 0.3;                 // player foot-sphere radius
+const SPAWN = new CANNON.Vec3(0, 0.05, 6);
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+renderer.xr.setFoveation(0.5);
+document.body.appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer));
+
+const scene = new THREE.Scene();
+const SKY = new THREE.Color('#9fd3d6');
+scene.background = SKY;
+scene.fog = new THREE.Fog(SKY, 25, 75);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.03, 200);
+const dolly = new THREE.Group();          // play-space origin; follows the physics body
+dolly.add(camera);
+scene.add(dolly);
+
+scene.add(new THREE.HemisphereLight('#dff6ff', '#3b4a3f', 0.9));
+const sun = new THREE.DirectionalLight('#fff1d6', 1.6);
+sun.position.set(12, 22, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 70 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- physics world ----------
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -GRAVITY, 0) });
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.allowSleep = false;
+world.solver.iterations = 14;
+world.defaultContactMaterial.friction = 0.45;
+world.defaultContactMaterial.restitution = 0.05;
+
+const G = { PLAYER: 1, HAND: 2, STATIC: 4, DYN: 8, GUN: 16, DEBRIS: 32 };
+const ALL = 0xffff, NO_PLAYER = ALL & ~G.PLAYER;
+let pistol = null;   // created once the M1911 model loads
+const matWorld = new CANNON.Material('world');
+const matPlayer = new CANNON.Material('player');
+const matHand = new CANNON.Material('hand');
+world.addContactMaterial(new CANNON.ContactMaterial(matPlayer, matWorld, { friction: 0, restitution: 0 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matHand, matWorld, { friction: 0.9, restitution: 0 }));
+
+const dynamics = [];   // { body, mesh, kind, half|radius }
+const grabbables = []; // everything a hand can grip: dynamic props to carry, static geometry to climb
+
+function gridTexture(base, line, repeat) {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = line; g.lineWidth = 3; g.strokeRect(0, 0, 256, 256);
+  g.lineWidth = 1; g.globalAlpha = 0.5;
+  g.beginPath(); g.moveTo(128, 0); g.lineTo(128, 256); g.moveTo(0, 128); g.lineTo(256, 128); g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat[0], repeat[1]);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+
+function addBox({ size, pos, rot = [0, 0, 0], color = '#c9d2cc', mass = 0, map = null }) {
+  const [w, h, d] = size;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.85, map }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  const half = new CANNON.Vec3(w / 2, h / 2, d / 2);
+  const body = new CANNON.Body({
+    mass, material: matWorld, shape: new CANNON.Box(half),
+    position: new CANNON.Vec3(...pos),
+    collisionFilterGroup: mass ? G.DYN : G.STATIC,
+    collisionFilterMask: ALL,
+  });
+  body.quaternion.setFromEuler(rot[0], rot[1], rot[2]);
+  world.addBody(body);
+  mesh.position.copy(body.position); mesh.quaternion.copy(body.quaternion);
+  scene.add(mesh);
+  const entry = { body, mesh, kind: 'box', half, spawnPos: body.position.clone(), spawnQuat: body.quaternion.clone() };
+  grabbables.push(entry);
+  if (mass) dynamics.push(entry);
+  return body;
+}
+
+function addBall(r, pos, color, mass = 2) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.4 }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  const body = new CANNON.Body({
+    mass, material: matWorld, shape: new CANNON.Sphere(r), position: new CANNON.Vec3(...pos),
+    collisionFilterGroup: G.DYN, collisionFilterMask: ALL,
+    linearDamping: 0.15, angularDamping: 0.2,
+  });
+  world.addBody(body); scene.add(mesh);
+  const entry = { body, mesh, kind: 'sphere', radius: r, spawnPos: body.position.clone(), spawnQuat: body.quaternion.clone() };
+  dynamics.push(entry);
+  grabbables.push(entry);
+}
+
+// ---------- level ----------
+addBox({ size: [80, 1, 80], pos: [0, -0.5, 0], color: '#ffffff', map: gridTexture('#6f8f7a', '#58745f', [40, 40]) });
+const wallMap = gridTexture('#d9ddd2', '#b9bfb2', [20, 2]);
+for (const [x, z, w, d] of [[0, -40, 80, 1], [0, 40, 80, 1], [-40, 0, 1, 80], [40, 0, 1, 80]])
+  addBox({ size: [w, 4, d], pos: [x, 2, z], color: '#ffffff', map: wallMap });
+
+// touch wall + window frame right by spawn
+addBox({ size: [0.3, 2.6, 4], pos: [-2.6, 1.3, 5], color: '#e6b85c' });
+addBox({ size: [0.3, 0.5, 3], pos: [2.6, 1.15, 7], color: '#4aa59a' });   // waist-high ledge
+
+// table with small props
+addBox({ size: [1.6, 0.08, 0.9], pos: [2.6, 0.86, 3.6], color: '#8a6a4f' });
+for (const [dx, dz] of [[-0.72, -0.37], [0.72, -0.37], [-0.72, 0.37], [0.72, 0.37]])
+  addBox({ size: [0.07, 0.82, 0.07], pos: [2.6 + dx, 0.41, 3.6 + dz], color: '#6b513c' });
+addBox({ size: [0.2, 0.2, 0.2], pos: [2.2, 1.0, 3.5], color: '#f06b4f', mass: 1.2 });
+addBox({ size: [0.16, 0.3, 0.16], pos: [2.6, 1.05, 3.7], color: '#5fd4c4', mass: 1.0 });
+addBox({ size: [0.24, 0.12, 0.24], pos: [3.0, 0.96, 3.45], color: '#ffb547', mass: 1.0 });
+addBall(0.11, [2.9, 1.1, 3.85], '#f2f2ea', 0.6);
+
+// crate pyramid
+let crateId = 0;
+for (let row = 0; row < 3; row++)
+  for (let i = 0; i < 3 - row; i++) {
+    const c = ['#c58b4d', '#b07a42', '#d39b5a'][crateId++ % 3];
+    addBox({ size: [0.5, 0.5, 0.5], pos: [5 + (i - (2 - row) / 2) * 0.52, 0.25 + row * 0.5, 2], color: c, mass: 6 });
+  }
+for (let i = 0; i < 5; i++) addBall(0.25, [-1 + i * 0.6, 0.3, 1.2], ['#f06b4f', '#5fd4c4', '#ffb547', '#8fb6ff', '#f2f2ea'][i], 3);
+
+// parkour line heading -Z
+const steps = [[0, -2.5, 0.5], [0, -5.2, 1.0], [2.6, -7.6, 1.5], [0, -10.4, 2.0], [-2.8, -13.0, 2.5], [0, -16.2, 3.0], [0, -20.5, 3.4]];
+steps.forEach(([x, z, top], i) =>
+  addBox({ size: [1.8, top, 1.8], pos: [x, top / 2, z], color: i % 2 ? '#4aa59a' : '#3d8f86' }));
+const goalTop = steps[steps.length - 1];
+const ring = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.07, 12, 48),
+  new THREE.MeshStandardMaterial({ color: '#ffb547', emissive: '#ff8a1f', emissiveIntensity: 0.6 }));
+ring.position.set(goalTop[0], goalTop[2] + 1.6, goalTop[1]);
+scene.add(ring);
+
+// stairs to a deck on the left
+for (let i = 0; i < 12; i++) {
+  const h = (i + 1) * 0.18;
+  addBox({ size: [2, h, 0.35], pos: [-7, h / 2, -1 - i * 0.35 - 0.175], color: i % 2 ? '#cfd6cf' : '#bfc7bf' });
+}
+addBox({ size: [4, 2.16, 4], pos: [-7, 1.08, -7.2], color: '#a9b7ae' });
+addBox({ size: [4, 0.9, 0.15], pos: [-7, 2.61, -9.15], color: '#e6b85c' }); // deck railing
+
+// ramp up to a high pad on the right
+addBox({ size: [3, 0.3, 8], pos: [9, 0.88, 0], rot: [0.25, 0, 0], color: '#8fb6ff' });
+addBox({ size: [4, 2.0, 4], pos: [9, 1.0, -5.85], color: '#7aa0e6' });
+
+// mantle block: 1.8 m ledge to grab and pull yourself onto
+addBox({ size: [2.5, 1.8, 3], pos: [6.5, 0.9, 6.5], color: '#e07a5f' });
+addBox({ size: [2.5, 0.06, 3], pos: [6.5, 1.83, 6.5], color: '#f2c14e' });   // painted lip
+
+// climbing tower: holds up the +X face, 5 m top
+addBox({ size: [2, 5, 2], pos: [-7, 2.5, 10], color: '#a9b7ae' });
+[0.9, 1.5, 2.1, 2.7, 3.3, 3.9, 4.5].forEach((y, i) =>
+  addBox({ size: [0.14, 0.08, 0.32], pos: [-5.93, y, 10 + (i % 2 ? 0.45 : -0.45)], color: i % 2 ? '#f06b4f' : '#ffb547' }));
+addBox({ size: [2, 0.06, 2], pos: [-7, 5.03, 10], color: '#f2c14e' });
+
+// pull-up bar
+addBox({ size: [0.12, 2.3, 0.12], pos: [11, 1.15, 7], color: '#4a5a57' });
+addBox({ size: [0.12, 2.3, 0.12], pos: [11, 1.15, 9.2], color: '#4a5a57' });
+addBox({ size: [0.07, 0.07, 2.2], pos: [11, 2.15, 8.1], color: '#d9ddd2' });
+
+// pillars for cover / wall-touching
+for (const [x, z] of [[-12, 8], [-14, -4], [14, 8], [16, -12], [-16, -16], [6, -16]])
+  addBox({ size: [1, 3.2, 1], pos: [x, 1.6, z], color: '#d9ddd2' });
+
+// signboard with controls (readable in VR)
+{
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#0f1a1f'; g.fillRect(0, 0, 1024, 512);
+  g.fillStyle = '#ffb547'; g.fillRect(0, 0, 1024, 10);
+  g.fillStyle = '#e8f2ef'; g.font = '700 64px "Chakra Petch", sans-serif';
+  g.fillText('VAULTYARD', 48, 100);
+  g.font = '500 36px "IBM Plex Sans", sans-serif'; g.fillStyle = '#9fb7b1';
+  ['Left stick: move     Stick click: sprint', 'A / X: jump          Right stick: turn',
+   'Grip a ledge, pull down to climb.', 'Reach the ring at the end of the course.']
+    .forEach((s, i) => g.fillText(s, 48, 190 + i * 70));
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), new THREE.MeshBasicMaterial({ map: tex }));
+  sign.position.set(-2.44, 1.6, 5); sign.rotation.y = Math.PI / 2;
+  scene.add(sign);
+  document.fonts?.ready.then(() => { /* redraw once fonts arrive */
+    g.fillStyle = '#0f1a1f'; g.fillRect(0, 10, 1024, 502);
+    g.fillStyle = '#e8f2ef'; g.font = '700 64px "Chakra Petch", sans-serif'; g.fillText('VAULTYARD', 48, 100);
+    g.font = '500 36px "IBM Plex Sans", sans-serif'; g.fillStyle = '#9fb7b1';
+    ['Left stick: move     Stick click: sprint', 'A / X: jump          Right stick: turn',
+     'Grip a ledge, pull down to climb.', 'Reach the ring at the end of the course.']
+      .forEach((s, i) => g.fillText(s, 48, 190 + i * 70));
+    tex.needsUpdate = true;
+  });
+}
+
+// ---------- player body ----------
+const player = new CANNON.Body({
+  mass: 70, material: matPlayer, fixedRotation: true, linearDamping: 0,
+  collisionFilterGroup: G.PLAYER, collisionFilterMask: G.STATIC | G.DYN,
+});
+player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, PR, 0));
+player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, 0.9, 0));
+player.addShape(new CANNON.Sphere(0.22), new CANNON.Vec3(0, 1.45, 0));
+player.position.copy(SPAWN);
+player.updateMassProperties();
+world.addBody(player);
+
+const groundRay = new CANNON.RaycastResult();
+const rayFrom = new CANNON.Vec3(), rayTo = new CANNON.Vec3();
+function isGrounded() {
+  if (player.velocity.y > 1.5) return false;
+  const p = player.position;
+  const foot = p.y + player.shapeOffsets[0].y;     // foot sphere centre (moves up when legs tuck)
+  for (const [ox, oz] of [[0, 0], [0.18, 0], [-0.18, 0], [0, 0.18], [0, -0.18]]) {
+    rayFrom.set(p.x + ox, foot + 0.05, p.z + oz);
+    rayTo.set(p.x + ox, foot - PR - 0.1, p.z + oz);
+    groundRay.reset();
+    if (world.raycastClosest(rayFrom, rayTo, { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, groundRay)) return true;
+  }
+  return false;
+}
+
+// ---------- physics hands ----------
+// Everything hand-related lives in WebXR grip space: origin in the curled fist,
+// -Z toward the thumb, +Y toward the arm, back of the right hand at +X (left hand at -X).
+
+// Fallback block hand, shown until the GLB hand model loads.
+function buildHandMesh(side, material) {
+  const outer = new THREE.Group();
+  const g = new THREE.Group();
+  g.rotation.x = -Math.PI / 2;           // authored fingers along -Z; grip space wants them along -Y
+  outer.add(g);
+  const add = (geo, x, y, z, rx = 0, ry = 0) => {
+    const m = new THREE.Mesh(geo, material); m.position.set(x, y, z); m.rotation.set(rx, ry, 0);
+    m.castShadow = true; g.add(m); return m;
+  };
+  add(new THREE.BoxGeometry(0.032, 0.085, 0.1), 0, 0, 0.02);              // palm (thin along X)
+  for (let i = 0; i < 4; i++)                                              // fingers forward along -Z
+    add(new THREE.BoxGeometry(0.026, 0.018, 0.068 - Math.abs(i - 1.5) * 0.008), 0, 0.03 - i * 0.02, -0.062, -0.12);
+  add(new THREE.BoxGeometry(0.024, 0.02, 0.055), side * -0.012, 0.05, -0.005, 0.5, side * 0.35); // thumb on top
+  add(new THREE.BoxGeometry(0.04, 0.07, 0.04), 0, -0.005, 0.085);         // wrist cuff
+  return outer;
+}
+
+// ---- skinned hand model (WebXR Input Profiles "generic-hand", MIT, (c) 2019 Amazon) ----
+const THUMB_CHAIN = ['thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip'];
+const FINGER_CHAINS = ['index', 'middle', 'ring', 'pinky'].map(f =>
+  ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'].map(j => `${f}-finger-${j}`));
+const CHAINS = [THUMB_CHAIN, ...FINGER_CHAINS];          // curl index: 0 thumb, 1 index, 2 middle, 3 ring, 4 pinky
+const DEG = Math.PI / 180;
+const THUMB_BEND = [10 * DEG, 30 * DEG, 45 * DEG, 0];
+const FINGER_BEND = [0, 78 * DEG, 95 * DEG, 55 * DEG, 0];
+const _rx = new THREE.Matrix4();
+
+class HandModel {
+  // One loaded GLB per handedness: rest pose, per-joint offsets and the grip-space alignment.
+  constructor(gltfScene, handedness) {
+    this.template = gltfScene;
+    const bones = this.collect(gltfScene).bones;
+    this.rest = {}; this.rel = {};
+    for (const n in bones) this.rest[n] = new THREE.Matrix4().compose(bones[n].position, bones[n].quaternion, bones[n].scale);
+    for (const chain of CHAINS)
+      for (let k = 1; k < chain.length; k++)
+        this.rel[chain[k]] = this.rest[chain[k - 1]].clone().invert().multiply(this.rest[chain[k]]);
+
+    // wrist-joint frame -> grip frame. Joint -Z runs toward the fingers (grip -Y), joint -Y leaves the palm.
+    const s = handedness === 'left' ? -1 : 1;
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(0, 0, s), new THREE.Vector3(s, 0, 0), new THREE.Vector3(0, 1, 0));
+    this.align = basis.multiply(this.rest.wrist.clone().invert());
+
+    // Shift so the centroid of the curled fingers sits on the grip origin, as the spec defines it.
+    const pose = {}, c = new THREE.Vector3(), p = new THREE.Vector3();
+    this.solve([1, 1, 1, 1, 1], pose);
+    let n = 0;
+    for (const chain of FINGER_CHAINS) for (const j of chain.slice(1)) {
+      c.add(p.setFromMatrixPosition(pose[j]).applyMatrix4(this.align)); n++;
+    }
+    c.multiplyScalar(-1 / n);
+    this.align.premultiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+
+    // Collision box fitted around the relaxed hand.
+    this.solve([0.2, 0.15, 0.15, 0.15, 0.15], pose);
+    const box = new THREE.Box3();
+    for (const name in pose) box.expandByPoint(p.setFromMatrixPosition(pose[name]).applyMatrix4(this.align));
+    box.expandByScalar(0.012);
+    this.colliderCenter = box.getCenter(new THREE.Vector3());
+    this.colliderHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  }
+  collect(root) {
+    const bones = {}; let mesh = null;
+    root.traverse(o => { if (o.isBone) bones[o.name] = o; if (o.isSkinnedMesh) mesh = o; });
+    return { bones, mesh };
+  }
+  solve(curls, out) {
+    out.wrist = this.rest.wrist;
+    CHAINS.forEach((chain, ci) => {
+      const bend = ci === 0 ? THUMB_BEND : FINGER_BEND;
+      chain.forEach((name, k) => {
+        const m = out[name] || (out[name] = new THREE.Matrix4());
+        if (k === 0) m.copy(this.rest[name]);
+        else m.copy(out[chain[k - 1]]).multiply(this.rel[name]);
+        const a = bend[k] * curls[ci];
+        if (a) m.multiply(_rx.makeRotationX(-a));   // toward the palm (joint -Y)
+      });
+    });
+    return out;
+  }
+  instance(material) {
+    const scene = cloneSkinned(this.template);
+    const { bones, mesh } = this.collect(scene);
+    mesh.material = material;
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+    holder.matrix.copy(this.align);
+    holder.add(scene);
+    const pose = {};
+    return {
+      holder,
+      apply: (curls) => {
+        this.solve(curls, pose);
+        for (const name in pose) if (bones[name]) pose[name].decompose(bones[name].position, bones[name].quaternion, bones[name].scale);
+      },
+    };
+  }
+}
+
+class PhysHand {
+  constructor(handedness) {
+    this.handedness = handedness;
+    const side = handedness === 'left' ? -1 : 1;
+    this.side = side;
+    this.body = new CANNON.Body({
+      mass: 1.5, material: matHand, linearDamping: 0, angularDamping: 0,
+      collisionFilterGroup: G.HAND, collisionFilterMask: G.STATIC | G.DYN | G.GUN,
+    });
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.02, 0.088, 0.048)), new CANNON.Vec3(0, -0.012, 0));
+    world.addBody(this.body);
+
+    const color = handedness === 'left' ? '#5fd4c4' : '#ffb547';
+    this.material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, flatShading: true });
+    this.ghostMaterial = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.35 });
+    this.mesh = new THREE.Group();
+    this.ghost = new THREE.Group();
+    this.fallback = buildHandMesh(side, this.material);
+    this.ghostFallback = buildHandMesh(side, this.ghostMaterial);
+    this.mesh.add(this.fallback);
+    this.ghost.add(this.ghostFallback);
+    scene.add(this.mesh, this.ghost);
+    this.rigs = [];
+    this.curl = [0.2, 0.15, 0.15, 0.15, 0.15];
+    this.curlTarget = this.curl.slice();
+
+    this.targetPos = new THREE.Vector3();
+    this.targetQuat = new THREE.Quaternion();
+    this.localPos = new THREE.Vector3();     // target relative to dolly
+    this.localQuat = new THREE.Quaternion();
+    this.active = false;
+    this.needsSnap = true;
+    this.held = null;
+    this.source = null;                       // XRInputSource for haptics
+    this.lastPulse = 0;
+    this.anchored = null;                     // static body gripped for climbing
+    this.touching = false;                    // in contact with anything last step
+    this.ctrlVel = new THREE.Vector3();       // controller velocity relative to the body, world axes
+    this.prevLocal = new THREE.Vector3();
+    this.hasPrevLocal = false;
+
+    this.body.addEventListener('collide', (e) => {
+      const impact = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      const now = performance.now();
+      if (impact > 0.25 && now - this.lastPulse > 60) {
+        this.lastPulse = now;
+        this.source?.gamepad?.hapticActuators?.[0]?.pulse?.(Math.min(1, 0.15 + impact / 5), 25);
+      }
+    });
+    this.setActive(false);
+  }
+  attachModel(model) {
+    const solid = model.instance(this.material);
+    const ghost = model.instance(this.ghostMaterial);
+    this.mesh.remove(this.fallback);
+    this.ghost.remove(this.ghostFallback);
+    this.mesh.add(solid.holder);
+    this.ghost.add(ghost.holder);
+    this.rigs = [solid, ghost];
+    // refit the physics collider to the real hand shape
+    this.body.removeShape(this.body.shapes[0]);
+    const h = model.colliderHalf, c = model.colliderCenter;
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(h.x, h.y, h.z)), new CANNON.Vec3(c.x, c.y, c.z));
+  }
+  setCurl(trigger, squeeze, thumb, dt) {
+    if (pistol?.holder === this) { thumb = 0.65; squeeze = 0.95; trigger = 0.3 + trigger * 0.5; }
+    else if (pistol?.slideHand === this) { thumb = 0.8; squeeze = 0.85; trigger = 0.85; }
+    const hold = this.held ? 0.75 : 0;
+    this.curlTarget[0] = Math.max(0.2, thumb, hold);
+    this.curlTarget[1] = Math.max(0.15, trigger, hold);
+    for (let i = 2; i < 5; i++) this.curlTarget[i] = Math.max(0.15, squeeze, hold);
+    const k = Math.min(1, dt * 18);
+    for (let i = 0; i < 5; i++) this.curl[i] += (this.curlTarget[i] - this.curl[i]) * k;
+    for (const r of this.rigs) r.apply(this.curl);
+  }
+  setActive(on) {
+    if (on === this.active) return;
+    this.active = on;
+    this.body.collisionFilterMask = on ? (G.STATIC | G.DYN | G.GUN) : 0;
+    this.mesh.visible = on;
+    if (!on) { this.release(); this.ghost.visible = false; }
+    this.needsSnap = true;
+  }
+  computeTarget(dollyMatrix, dollyQuat) {
+    this.targetPos.copy(this.localPos).applyMatrix4(dollyMatrix);
+    this.targetQuat.copy(dollyQuat).multiply(this.localQuat);
+  }
+  teleport() {
+    const b = this.body;
+    if (pistol?.holder === this) {
+      // keep the pistol in hand through snap turns and snaps
+      b.position.set(this.targetPos.x, this.targetPos.y, this.targetPos.z);
+      b.quaternion.set(this.targetQuat.x, this.targetQuat.y, this.targetQuat.z, this.targetQuat.w);
+      b.velocity.setZero(); b.angularVelocity.setZero();
+      pistol.snapToHand();
+      this.needsSnap = false;
+      return;
+    }
+    this.release();
+    b.position.set(this.targetPos.x, this.targetPos.y, this.targetPos.z);
+    b.quaternion.set(this.targetQuat.x, this.targetQuat.y, this.targetQuat.z, this.targetQuat.w);
+    b.velocity.setZero(); b.angularVelocity.setZero();
+    this.needsSnap = false;
+  }
+  // Every hand force has an equal and opposite force on the player body, so pressing into
+  // a wall pushes you away, pushing down on a ledge lifts you, and pulling on a grip moves you.
+  drive(h) {
+    if (!this.active) return;
+    const b = this.body;
+    const dx = this.targetPos.x - b.position.x, dy = this.targetPos.y - b.position.y, dz = this.targetPos.z - b.position.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    // where the controller is heading in world space: body velocity + arm motion
+    const tvx = player.velocity.x + this.ctrlVel.x, tvy = player.velocity.y + this.ctrlVel.y, tvz = player.velocity.z + this.ctrlVel.z;
+
+    if (this.anchored) {
+      // Hand is clamped to the world. The arm spring acts only on the body: pull the controller
+      // down and the body rises until the controller meets the hand again.
+      if (d2 > CLIMB_BREAK_DIST * CLIMB_BREAK_DIST) { this.release(); this.needsSnap = true; return; }
+      _f.set(-dx * CLIMB_K - tvx * CLIMB_C, -dy * CLIMB_K - tvy * CLIMB_C, -dz * CLIMB_K - tvz * CLIMB_C);
+      clampLen(_f, CLIMB_FMAX);
+      player.force.x += _f.x; player.force.y += _f.y; player.force.z += _f.z;
+      b.velocity.setZero(); b.angularVelocity.setZero();
+      return;
+    }
+    if (this.needsSnap || d2 > HAND_SNAP_DIST * HAND_SNAP_DIST) { this.teleport(); return; }
+
+    // linear: PD spring from hand to controller, with gravity carried by the arm
+    _f.set(dx * HAND_K + (tvx - b.velocity.x) * HAND_C,
+           dy * HAND_K + (tvy - b.velocity.y) * HAND_C,
+           dz * HAND_K + (tvz - b.velocity.z) * HAND_C);
+    clampLen(_f, HAND_FMAX);
+    const carry = b.mass * GRAVITY;
+    b.force.x += _f.x; b.force.y += _f.y + carry; b.force.z += _f.z;
+    player.force.x -= _f.x; player.force.y -= _f.y + carry; player.force.z -= _f.z;
+    if (this.touching) {
+      // extra arm damping on the body while bracing, so pushing off doesn't feel springy
+      player.force.x -= (tvx - b.velocity.x) * HAND_BRACE_C;
+      player.force.y -= (tvy - b.velocity.y) * HAND_BRACE_C;
+      player.force.z -= (tvz - b.velocity.z) * HAND_BRACE_C;
+    }
+
+    // angular: shortest rotation from current to target
+    _q1.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w).invert();
+    _q2.copy(this.targetQuat).multiply(_q1);
+    if (_q2.w < 0) { _q2.x = -_q2.x; _q2.y = -_q2.y; _q2.z = -_q2.z; _q2.w = -_q2.w; }
+    const angle = 2 * Math.acos(Math.min(1, _q2.w));
+    const s = Math.sqrt(Math.max(0, 1 - _q2.w * _q2.w));
+    if (s < 1e-4) b.angularVelocity.setZero();
+    else {
+      let w = angle / h * 0.8;
+      if (w > HAND_MAX_W) w = HAND_MAX_W;
+      if (pistol?.holder === this) {
+        // wrist is springy while gripping the pistol, so recoil flips the muzzle and it settles back
+        const k = 0.28;
+        b.angularVelocity.x += (_q2.x / s * w - b.angularVelocity.x) * k;
+        b.angularVelocity.y += (_q2.y / s * w - b.angularVelocity.y) * k;
+        b.angularVelocity.z += (_q2.z / s * w - b.angularVelocity.z) * k;
+      } else b.angularVelocity.set(_q2.x / s * w, _q2.y / s * w, _q2.z / s * w);
+    }
+  }
+  sync() {
+    this.mesh.position.copy(this.body.position);
+    this.mesh.quaternion.copy(this.body.quaternion);
+    if (pistol?.slideHand === this) pistol.placeSlideHand(this.mesh);
+    const sep = this.mesh.position.distanceTo(this.targetPos);
+    this.ghost.visible = this.active && sep > 0.03;
+    this.ghost.position.copy(this.targetPos);
+    this.ghost.quaternion.copy(this.targetQuat);
+  }
+  grab() {
+    if (!this.active || this.held || this.anchored) return;
+    if (pistol?.tryGrab(this)) return;
+    const palm = this.body.pointToWorldFrame(this.body.shapeOffsets[0]);   // centre of the hand
+    let best = null, bestD = GRAB_REACH;
+    const local = new CANNON.Vec3();
+    for (const d of grabbables) {
+      d.body.pointToLocalFrame(palm, local);
+      let dist;
+      if (d.kind === 'box') {
+        const cx = Math.max(-d.half.x, Math.min(d.half.x, local.x));
+        const cy = Math.max(-d.half.y, Math.min(d.half.y, local.y));
+        const cz = Math.max(-d.half.z, Math.min(d.half.z, local.z));
+        dist = Math.hypot(local.x - cx, local.y - cy, local.z - cz);
+      } else dist = Math.max(0, local.length() - d.radius);
+      if (dist < bestD) { bestD = dist; best = d; }
+    }
+    if (!best) return;
+    if (best.body.mass === 0) {
+      // climbing grip: the hand becomes part of the world until released
+      this.anchored = best;
+      this.body.type = CANNON.Body.KINEMATIC;
+      this.body.velocity.setZero(); this.body.angularVelocity.setZero();
+    } else {
+      const c = new CANNON.LockConstraint(this.body, best.body, { maxForce: 2000 });
+      c.collideConnected = false;
+      world.addConstraint(c);
+      best.body.collisionFilterMask = NO_PLAYER;   // a held prop can't shove the player
+      this.held = { c, d: best };
+    }
+    this.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.5, 40);
+  }
+  release() {
+    if (pistol?.holder === this) pistol.drop();
+    if (pistol?.slideHand === this) pistol.releaseSlide();
+    if (this.anchored) {
+      this.anchored = null;
+      this.body.type = CANNON.Body.DYNAMIC;
+      this.body.velocity.setZero();
+    }
+    if (!this.held) return;
+    world.removeConstraint(this.held.c);
+    const otherHand = this === hands.left ? hands.right : hands.left;
+    if (otherHand?.held?.d !== this.held.d) this.held.d.body.collisionFilterMask = ALL;
+    this.held = null;
+  }
+}
+const _f = new CANNON.Vec3();
+function clampLen(v, max) { const l = v.length(); if (l > max) v.scale(max / l, v); }
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
+const hands = {};
+hands.left = new PhysHand('left');
+hands.right = new PhysHand('right');
+
+// The GLBs ship base64-encoded inside a JS module (the artifact host serves .js, not .glb).
+const gltfLoader = new GLTFLoader();
+import('./models/hands.js').then((glb) => {
+  for (const side of ['left', 'right']) {
+    const bin = Uint8Array.from(atob(glb[side]), c => c.charCodeAt(0)).buffer;
+    gltfLoader.parseAsync(bin, '')
+      .then(g => hands[side].attachModel(new HandModel(g.scene, side)))
+      .catch(err => console.warn(`Hand model ${side} failed to parse; using block hands.`, err));
+  }
+}).catch(err => console.warn('Hand models failed to load; using block hands.', err));
+
+// ---------- XR controllers ----------
+const slots = [null, null];
+for (let i = 0; i < 2; i++) {
+  const grip = renderer.xr.getControllerGrip(i);
+  const ctrl = renderer.xr.getController(i);
+  dolly.add(grip, ctrl);
+  grip.addEventListener('connected', (e) => {
+    const src = e.data;
+    const hand = hands[src.handedness];
+    if (!hand) return;
+    hand.source = src;
+    slots[i] = { src, grip, hand, prev: [] };
+  });
+  grip.addEventListener('disconnected', () => {
+    if (slots[i]) { slots[i].hand.setActive(false); slots[i].hand.source = null; }
+    slots[i] = null;
+  });
+  ctrl.addEventListener('squeezestart', () => slots[i]?.hand.grab());
+  ctrl.addEventListener('squeezeend', () => slots[i]?.hand.release());
+}
+
+// ---------- desktop input ----------
+const keys = new Set();
+let yaw = 0, pitch = 0, reach = 0.45, locked = false;
+const brief = document.getElementById('brief');
+addEventListener('keydown', (e) => {
+  keys.add(e.code);
+  if (e.code === 'Space') { jumpQueuedAt = simTime; e.preventDefault(); }
+  if (e.code === 'KeyR') respawn();
+  if (pistol && locked) {
+    if (e.code === 'KeyF') pistol.setTrigger(1);
+    if (e.code === 'KeyQ') pistol.ejectMag();
+    if (e.code === 'KeyE') pistol.rack();
+    if (e.code === 'KeyZ') {   // load the magazine held in your other hand
+      const h = [hands.left, hands.right].find(h => h.held?.d?.isMag && h !== pistol.holder);
+      if (h) pistol.insertMag(h.held.d, h);
+    }
+  }
+});
+addEventListener('keyup', (e) => { keys.delete(e.code); if (e.code === 'KeyF') pistol?.setTrigger(0); });
+addEventListener('blur', () => keys.clear());
+const requestLock = () => { if (!renderer.xr.isPresenting) renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); };
+renderer.domElement.addEventListener('click', requestLock);
+brief.addEventListener('click', requestLock);
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === renderer.domElement;
+  brief.classList.toggle('min', locked);
+  if (!locked) { hands.left.release(); hands.right.release(); }
+});
+addEventListener('mousemove', (e) => {
+  if (!locked) return;
+  yaw -= e.movementX * 0.0022;
+  pitch = Math.max(-1.45, Math.min(1.45, pitch - e.movementY * 0.0022));
+});
+const mouseFist = { left: false, right: false };
+addEventListener('mousedown', (e) => {
+  if (!locked) return;
+  if (e.button === 0) { hands.right.grab(); mouseFist.right = true; }
+  if (e.button === 2) { hands.left.grab(); mouseFist.left = true; }
+});
+addEventListener('mouseup', (e) => {
+  if (e.button === 0) { hands.right.release(); mouseFist.right = false; }
+  if (e.button === 2) { hands.left.release(); mouseFist.left = false; }
+});
+addEventListener('contextmenu', (e) => e.preventDefault());
+addEventListener('wheel', (e) => { reach = Math.max(0.2, Math.min(1.0, reach - e.deltaY * 0.0006)); }, { passive: true });
+
+// ---------- state ----------
+let simTime = 0, lastGroundedAt = -1, jumpQueuedAt = -10, grounded = false;
+let sprintToggle = false, turnReady = true;
+const moveWorld = new THREE.Vector3();
+const headLocal = new THREE.Vector3(0, 1.6, 0);
+const headQuatLocal = new THREE.Quaternion();
+const prevHead = new THREE.Vector3();
+let havePrevHead = false;
+const headVel = new THREE.Vector3();
+const appliedHead = new THREE.Vector2();
+let accumulator = 0;
+let tuck = 0, tuckTarget = 0, lastBraceAt = -10;
+let reachedGoal = false;
+
+function respawn() {
+  player.position.copy(SPAWN);
+  player.velocity.setZero();
+  yaw = 0; pitch = 0;
+  pistol?.reset();
+  for (const d of dynamics) {
+    if (!d.spawnPos) continue;
+    d.body.position.copy(d.spawnPos); d.body.quaternion.copy(d.spawnQuat);
+    d.body.velocity.setZero(); d.body.angularVelocity.setZero();
+  }
+  hands.left.release(); hands.right.release();
+  hands.left.needsSnap = hands.right.needsSnap = true;
+}
+
+renderer.xr.addEventListener('sessionstart', () => {
+  havePrevHead = false;
+  hands.left.needsSnap = hands.right.needsSnap = true;
+  brief.hidden = true;
+});
+renderer.xr.addEventListener('sessionend', () => {
+  hands.left.setActive(false); hands.right.setActive(false);
+  slots[0] = slots[1] = null;
+  brief.hidden = false;
+});
+
+// Place the dolly so the tracked head sits right over the physics body.
+const _dq = new THREE.Quaternion();
+function syncDolly() {
+  dolly.rotation.set(0, yaw, 0);
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const hx = headLocal.x, hz = headLocal.z;
+  dolly.position.set(
+    player.position.x - (hx * c + hz * s),
+    player.position.y,
+    player.position.z - (-hx * s + hz * c));
+  dolly.updateMatrix();
+  dolly.matrixWorld.copy(dolly.matrix);
+  _dq.copy(dolly.quaternion);
+}
+
+function readInput(dt) {
+  const xr = renderer.xr.isPresenting;
+  let mx = 0, my = 0, turn = 0, jump = false, sprintHeld = false;
+
+  if (xr) {
+    for (const slot of slots) {
+      if (!slot) continue;
+      const gp = slot.src.gamepad;
+      if (!gp) continue;
+      const pressed = (i) => !!gp.buttons[i]?.pressed;
+      const edge = (i) => { const p = pressed(i), was = slot.prev[i]; slot.prev[i] = p; return p && !was; };
+      const sx = gp.axes[2] ?? 0, sy = gp.axes[3] ?? 0;
+      if (slot.src.handedness === 'left') {
+        mx = sx; my = sy;
+        if (edge(3)) sprintToggle = !sprintToggle;
+      } else {
+        turn = sx;
+        edge(3);
+      }
+      if (edge(4)) jump = true;
+      if (pistol && slot.hand === pistol.holder) {
+        pistol.setTrigger(gp.buttons[0]?.value ?? 0);
+        if (edge(5)) pistol.ejectMag();          // B / Y drops the magazine
+      }
+    }
+    const mag = Math.hypot(mx, my);
+    if (mag < 0.15) { mx = my = 0; sprintToggle = false; }
+    // snap turn
+    if (Math.abs(turn) > 0.7 && turnReady) {
+      yaw -= Math.sign(turn) * Math.PI / 6;
+      turnReady = false;
+      hands.left.needsSnap = hands.right.needsSnap = true;
+    } else if (Math.abs(turn) < 0.3) turnReady = true;
+  } else if (locked) {
+    if (keys.has('KeyW')) my -= 1;
+    if (keys.has('KeyS')) my += 1;
+    if (keys.has('KeyA')) mx -= 1;
+    if (keys.has('KeyD')) mx += 1;
+    sprintHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  }
+  if (jump) jumpQueuedAt = simTime;
+
+  // head-relative movement direction
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(headQuatLocal);
+  fwd.y = 0;
+  if (fwd.lengthSq() < 1e-4) fwd.set(0, 0, -1);
+  fwd.normalize().applyAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  moveWorld.set(0, 0, 0).addScaledVector(right, mx).addScaledVector(fwd, -my);
+  if (moveWorld.lengthSq() > 1) moveWorld.normalize();
+  return sprintHeld || sprintToggle;
+}
+
+function readHead(dt) {
+  const xr = renderer.xr.isPresenting;
+  if (xr) {
+    const cams = renderer.xr.getCamera().cameras;
+    if (cams.length) {
+      headLocal.set(0, 0, 0);
+      for (const c of cams) headLocal.add(c.position);
+      headLocal.multiplyScalar(1 / cams.length);
+      headQuatLocal.copy(cams[0].quaternion);
+    }
+    // physical walking -> body velocity, so walls stop you instead of letting your head clip
+    if (havePrevHead && dt > 0) {
+      const d = new THREE.Vector3(headLocal.x - prevHead.x, 0, headLocal.z - prevHead.z)
+        .applyAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+      if (d.length() < 0.5) headVel.copy(d).multiplyScalar(1 / dt); else headVel.set(0, 0, 0);
+    } else headVel.set(0, 0, 0);
+    prevHead.copy(headLocal); havePrevHead = true;
+  } else {
+    headLocal.set(0, 1.6, 0);
+    headQuatLocal.setFromEuler(new THREE.Euler(pitch, 0, 0));
+    headVel.set(0, 0, 0);
+  }
+}
+
+function updateHandTargets(dt) {
+  const xr = renderer.xr.isPresenting;
+  if (xr) {
+    for (const hand of [hands.left, hands.right]) {
+      const slot = slots.find(s => s && s.hand === hand);
+      const tracked = !!slot && slot.grip.visible;
+      hand.setActive(tracked);
+      if (tracked) { hand.localPos.copy(slot.grip.position); hand.localQuat.copy(slot.grip.quaternion); }
+      const b = slot?.src.gamepad?.buttons ?? [];
+      const thumbDown = b[3]?.touched || b[4]?.touched || b[5]?.touched ? 0.8 : 0;
+      hand.setCurl(b[0]?.value ?? 0, b[1]?.value ?? 0, thumbDown, dt);
+    }
+  } else {
+    for (const hand of [hands.left, hands.right]) {
+      hand.setActive(true);
+      const off = new THREE.Vector3(hand.side * 0.2, -0.22, -reach).applyQuaternion(headQuatLocal);
+      hand.localPos.copy(headLocal).add(off);
+      hand.localQuat.copy(headQuatLocal).multiply(pistol?.holder === hand ? _tiltGun : _tilt[hand.handedness]);
+      const f = mouseFist[hand.handedness] ? 1 : 0;
+      hand.setCurl(f, f, f * 0.8, dt);
+    }
+  }
+  // controller velocity relative to the body (world axes); the dolly also slides opposite to head walking
+  for (const hand of [hands.left, hands.right]) {
+    const v = hand.ctrlVel;
+    if (hand.hasPrevLocal && dt > 0 && !hand.needsSnap) {
+      v.copy(hand.localPos).sub(hand.prevLocal).multiplyScalar(1 / dt).applyAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+      v.x -= headVel.x; v.z -= headVel.z;
+      if (v.lengthSq() > 15 * 15) v.set(0, 0, 0);
+    } else v.set(0, 0, 0);
+    hand.prevLocal.copy(hand.localPos);
+    hand.hasPrevLocal = hand.active;
+  }
+}
+// Desktop: point the fingers (grip -Y) forward and roll the palms mostly downward.
+const _tiltGun = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2 - 0.25, 0, 0));   // thumb up, pistol upright
+const _tilt = {
+  left: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2 - 0.2, 0, -1.1, 'ZYX')),
+  right: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2 - 0.2, 0, 1.1, 'ZYX')),
+};
+
+function stepPlayer(h, sprinting) {
+  grounded = isGrounded();
+  if (grounded) lastGroundedAt = simTime;
+  if (simTime - jumpQueuedAt < JUMP_BUFFER && simTime - lastGroundedAt < COYOTE) {
+    player.velocity.y = JUMP_V;
+    jumpQueuedAt = -10; lastGroundedAt = -10; grounded = false;
+  }
+  const climbing = !!(hands.left.anchored || hands.right.anchored);
+  const bracing = climbing || hands.left.touching || hands.right.touching;
+  if (bracing) lastBraceAt = simTime;
+
+  // Legs: tuck up while hanging or bracing in the air so the body can get over a ledge,
+  // then unfold once standing (the unfold pushes the body up onto the ledge).
+  // Folding starts when you grip something while airborne and holds while you keep bracing.
+  if (!grounded && climbing) tuckTarget = 1;
+  else if (grounded || simTime - lastBraceAt > 0.4) tuckTarget = 0;
+  const rate = tuckTarget > tuck ? 4 : 2.5;
+  tuck += Math.max(-rate * h, Math.min(rate * h, tuckTarget - tuck));
+  const footY = PR + tuck * (TUCK_TO - PR);
+  if (Math.abs(player.shapeOffsets[0].y - footY) > 1e-5) {
+    player.shapeOffsets[0].y = footY;
+    player.shapeOffsets[1].y = 0.9 + tuck * (TUCK_TO - 0.9);
+    player.updateBoundingRadius();
+    player.aabbNeedsUpdate = true;
+  }
+
+  // Feet work like a traction force with a limited grip on the ground. While your hands are
+  // bracing and you aren't steering, the feet barely hold, so pushes from your hands move you.
+  const speed = sprinting ? SPRINT : WALK;
+  const steering = moveWorld.lengthSq() > 0.01;
+  const accel = grounded ? (steering || !bracing ? TRACTION : TRACTION_BRACING) : (steering ? AIR_CONTROL : 0);
+  let vx = player.velocity.x - appliedHead.x;
+  let vz = player.velocity.z - appliedHead.y;
+  if (accel > 0) {
+    let ax = moveWorld.x * speed - vx, az = moveWorld.z * speed - vz;
+    const m = Math.hypot(ax, az), max = accel * h;
+    if (m > max) { ax *= max / m; az *= max / m; }
+    vx += ax; vz += az;
+  }
+  player.velocity.x = vx + headVel.x;
+  player.velocity.z = vz + headVel.z;
+  appliedHead.set(headVel.x, headVel.z);
+}
+
+function updateHandContacts() {
+  hands.left.touching = hands.right.touching = false;
+  for (const c of world.contacts) {
+    for (const hand of [hands.left, hands.right])
+      if (c.bi === hand.body || c.bj === hand.body) hand.touching = true;
+  }
+}
+
+// ---------- audio ----------
+const actx = new (window.AudioContext || window.webkitAudioContext)();
+const master = actx.createGain(); master.gain.value = 0.85;
+const limiter = actx.createDynamicsCompressor();
+limiter.threshold.value = -8; limiter.ratio.value = 8; limiter.attack.value = 0.001; limiter.release.value = 0.15;
+master.connect(limiter).connect(actx.destination);
+function makeImpulse(seconds, decay) {
+  // outdoor yard: early slap off walls, then a fading diffuse tail
+  const sr = actx.sampleRate, n = Math.floor(seconds * sr), b = actx.createBuffer(2, n, sr);
+  for (let c = 0; c < 2; c++) {
+    const d = b.getChannelData(c);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, decay) * (i < sr * 0.02 ? 0.3 : 1);
+    for (const [t, g] of [[0.031, 0.7], [0.047, 0.5], [0.083, 0.35]]) { const k = Math.floor(t * sr) + c * 37; if (k < n) d[k] += g; }
+  }
+  return b;
+}
+const reverb = actx.createConvolver(); reverb.buffer = makeImpulse(1.8, 3);
+const reverbOut = actx.createGain(); reverbOut.gain.value = 0.5;
+reverb.connect(reverbOut).connect(master);
+const resumeAudio = () => { if (actx.state !== 'running') actx.resume(); };
+addEventListener('pointerdown', resumeAudio);
+addEventListener('keydown', resumeAudio);
+renderer.xr.addEventListener('sessionstart', resumeAudio);
+
+const sfx = {};
+async function loadSfx(name, url) {
+  try { sfx[name] = await actx.decodeAudioData(await (await fetch(url)).arrayBuffer()); }
+  catch (err) { console.warn(`Sound ${url} failed to load`, err); }
+}
+loadSfx('shot', 'sfx/gunshot.wav');        // CZ-52 recording (Vincent Sevedge, CC-BY 3.0)
+loadSfx('handling', 'sfx/handling.wav');   // mag out / mag in / slide rack (zer0_sol, CC0)
+const HANDLING = { magOut: [0.07, 0.42], magIn: [0.57, 0.42], slideBack: [1.0, 0.16], slideFwd: [1.16, 0.4] };
+
+function synth(seconds, fn) {
+  const sr = actx.sampleRate, n = Math.ceil(seconds * sr), b = actx.createBuffer(1, n, sr), d = b.getChannelData(0);
+  let state = 0;
+  for (let i = 0; i < n; i++) { const r = fn(i / sr, state); d[i] = r[0]; state = r[1]; }
+  return b;
+}
+const noise = () => Math.random() * 2 - 1;
+const syn = {
+  // supersonic crack + muzzle blast body + rolling tail, layered over the recording
+  shot: synth(1.4, (t, lp) => {
+    const crack = noise() * Math.exp(-t / 0.0022) * 1.0;
+    const boom = Math.sin(2 * Math.PI * (45 * t + 120 * 0.018 * (1 - Math.exp(-t / 0.018)))) * Math.exp(-t / 0.075) * (1 - Math.exp(-t / 0.0008)) * 0.9;
+    lp += (noise() - lp) * 0.06;
+    const tail = lp * Math.exp(-t / 0.32) * 1.6;
+    return [crack + boom + tail, lp];
+  }),
+  dry: synth(0.08, (t) => [noise() * Math.exp(-t / 0.0007) * 0.8 + Math.sin(2 * Math.PI * 3400 * t) * Math.exp(-t / 0.012) * 0.25
+    + (t > 0.011 ? noise() * Math.exp(-(t - 0.011) / 0.0006) * 0.4 : 0), 0]),
+  cock: synth(0.06, (t) => [noise() * Math.exp(-t / 0.0009) * 0.5 + Math.sin(2 * Math.PI * 4100 * t) * Math.exp(-t / 0.008) * 0.2, 0]),
+  tink: [2600, 3100, 3700].map(f => synth(0.35, (t) => [
+    (Math.sin(2 * Math.PI * f * t) * Math.exp(-t / 0.09) + Math.sin(2 * Math.PI * f * 2.76 * t) * Math.exp(-t / 0.04) * 0.5
+      + Math.sin(2 * Math.PI * f * 5.4 * t) * Math.exp(-t / 0.02) * 0.3) * 0.5 + noise() * Math.exp(-t / 0.001) * 0.3, 0])),
+  ping: synth(1.6, (t) => [[1, 2.32, 4.25, 6.63].reduce((a, k, i) =>
+    a + Math.sin(2 * Math.PI * 610 * k * t) * Math.exp(-t / [0.9, 0.55, 0.3, 0.15][i]) * [0.6, 0.35, 0.25, 0.15][i], 0)
+    + noise() * Math.exp(-t / 0.002) * 0.6, 0]),
+  thud: synth(0.25, (t, lp) => { lp += (noise() - lp) * 0.12; return [lp * Math.exp(-t / 0.03) * 2.2 + noise() * Math.exp(-t / 0.0015) * 0.4, lp]; }),
+};
+
+function setPannerPos(p, v) {
+  if (p.positionX) { p.positionX.value = v.x; p.positionY.value = v.y; p.positionZ.value = v.z; }
+  else p.setPosition(v.x, v.y, v.z);
+}
+function playAt(buf, pos, o = {}) {
+  if (!buf || actx.state !== 'running') return;
+  const src = actx.createBufferSource(); src.buffer = buf;
+  src.playbackRate.value = o.rate ?? 1;
+  const g = actx.createGain(); g.gain.value = o.gain ?? 1;
+  const p = actx.createPanner();
+  p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = o.ref ?? 1; p.rolloffFactor = 1; p.maxDistance = 300;
+  setPannerPos(p, pos);
+  src.connect(g).connect(p).connect(master);
+  if (o.reverb) { const s = actx.createGain(); s.gain.value = o.reverb; g.connect(s).connect(reverb); }
+  src.start(actx.currentTime, o.offset ?? 0, o.duration);
+}
+function playHandling(part, pos, gain = 1) {
+  const [off, dur] = HANDLING[part];
+  playAt(sfx.handling, pos, { offset: off, duration: dur, gain, ref: 0.6 });
+}
+const _lp = new THREE.Vector3(), _lq = new THREE.Quaternion(), _ls = new THREE.Vector3(), _lf = new THREE.Vector3(), _lu = new THREE.Vector3();
+function updateListener() {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  if (!renderer.xr.isPresenting) camera.updateMatrixWorld(true);
+  cam.matrixWorld.decompose(_lp, _lq, _ls);
+  _lf.set(0, 0, -1).applyQuaternion(_lq); _lu.set(0, 1, 0).applyQuaternion(_lq);
+  const L = actx.listener;
+  if (L.positionX) {
+    L.positionX.value = _lp.x; L.positionY.value = _lp.y; L.positionZ.value = _lp.z;
+    L.forwardX.value = _lf.x; L.forwardY.value = _lf.y; L.forwardZ.value = _lf.z;
+    L.upX.value = _lu.x; L.upY.value = _lu.y; L.upZ.value = _lu.z;
+  } else { L.setPosition(_lp.x, _lp.y, _lp.z); L.setOrientation(_lf.x, _lf.y, _lf.z, _lu.x, _lu.y, _lu.z); }
+}
+
+// ---------- shooting range ----------
+addBox({ size: [0.6, 0.06, 1.3], pos: [-4, 0.86, 1.5], color: '#6b513c' });          // bench
+for (const [dx, dz] of [[-0.25, -0.58], [0.25, -0.58], [-0.25, 0.58], [0.25, 0.58]])
+  addBox({ size: [0.06, 0.83, 0.06], pos: [-4 + dx, 0.415, 1.5 + dz], color: '#4e3b2c' });
+addBox({ size: [0.6, 3.2, 10], pos: [-17.5, 1.6, 1.5], color: '#8a7d6b' });           // berm / backstop
+addBox({ size: [0.1, 2.1, 0.1], pos: [-14, 1.05, -1.6], color: '#4a5a57' });
+addBox({ size: [0.1, 2.1, 0.1], pos: [-14, 1.05, 4.6], color: '#4a5a57' });
+const plateBar = addBox({ size: [0.08, 0.08, 6.3], pos: [-14, 2.1, 1.5], color: '#4a5a57' });
+const plateBodies = new Set();
+[-0.4, 0.9, 2.2, 3.4].forEach((z, i) => {
+  const s = i === 3 ? 0.18 : 0.26;
+  const plate = addBox({ size: [0.02, s * 2, s * 2], pos: [-14, 1.65 - s, z], color: '#e8ecea', mass: 5 });
+  const c = new CANNON.PointToPointConstraint(plate, new CANNON.Vec3(0, s + 0.4, 0), plateBar, new CANNON.Vec3(0, -0.05, z - 1.5));
+  world.addConstraint(c);
+  plateBodies.add(plate);
+});
+addBox({ size: [0.4, 0.05, 2.2], pos: [-11, 1.0, 3.6], color: '#6b513c' });            // can shelf
+for (const dz of [-1, 1]) addBox({ size: [0.05, 1.0, 0.05], pos: [-11, 0.5, 3.6 + dz], color: '#4e3b2c' });
+function addCan(pos, color) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.033, 0.12, 16),
+    new THREE.MeshStandardMaterial({ color, metalness: 0.6, roughness: 0.35 }));
+  mesh.castShadow = true;
+  const body = new CANNON.Body({ mass: 0.35, material: matWorld, shape: new CANNON.Cylinder(0.033, 0.033, 0.12, 10),
+    position: new CANNON.Vec3(...pos), collisionFilterGroup: G.DYN, collisionFilterMask: ALL, angularDamping: 0.2 });
+  world.addBody(body); scene.add(mesh);
+  const entry = { body, mesh, kind: 'sphere', radius: 0.06, spawnPos: body.position.clone(), spawnQuat: body.quaternion.clone() };
+  dynamics.push(entry); grabbables.push(entry);
+  body.addEventListener('collide', (e) => {
+    const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+    if (v > 1.2) playAt(syn.tink[1], body.position, { gain: Math.min(0.5, v * 0.08), rate: 0.45 });
+  });
+}
+['#d64545', '#e0c341', '#4f9bd9', '#7bc96f', '#e0884a', '#c76bd1'].forEach((c, i) => addCan([-11, 1.09, 2.75 + i * 0.34], c));
+
+// ---------- pistol ----------
+// Pistol space = the M1911 model's own frame: barrel along -Z, grip down and back (+Z), right side +X.
+const SLIDE_TRAVEL = 0.048, MAG_CAP = 7;
+const RAKE = Math.atan2(0.324, 0.946);                               // grip angle, ~19°
+const MAG_UP = new THREE.Vector3(0, Math.cos(RAKE), -Math.sin(RAKE)); // magwell -> chamber
+const MAG_CENTER = new THREE.Vector3(0, -0.1012, 0.0073);            // seated magazine centre
+const MAG_HALF = new CANNON.Vec3(0.0141, 0.06, 0.0175);
+const MAGWELL = new THREE.Vector3(0, -0.1585, 0.0265);               // bottom of the grip
+const GRIP_POINT = new THREE.Vector3(0, -0.09, 0.006);               // where the fist closes: the attach point
+const SLIDE_GRAB = new THREE.Vector3(0, -0.008, 0.004);              // rear slide serrations
+const MUZZLE = new THREE.Vector3(0, -0.012, -0.196);
+const EJECT_PORT = new THREE.Vector3(0.014, -0.004, -0.045);
+const HAMMER_PIVOT = new THREE.Vector3(0.0082, -0.0108, 0.0224);
+const HAMMER_DOWN = -1.0;
+const RECOIL_V = 1.8, RECOIL_FLIP = 11, BULLET_IMPULSE = 3.5;
+const magFrameQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -RAKE);
+// Attach pose: the pistol's grip axis lies along the controller's grip axis (-Z, toward the thumb),
+// the barrel points out past the fingers, and GRIP_POINT sits at the centre of the fist.
+const ATTACH_Q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+  new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, Math.sin(RAKE), Math.cos(RAKE)), new THREE.Vector3(0, -Math.cos(RAKE), Math.sin(RAKE)))).invert();
+const ATTACH_P = GRIP_POINT.clone().applyQuaternion(ATTACH_Q).negate();
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _cv = new CANNON.Vec3(), _cv2 = new CANNON.Vec3();
+
+class Pistol {
+  constructor(parts) {
+    this.group = new THREE.Group();
+    scene.add(this.group);
+    for (const m of parts.frame) this.group.add(m);
+    this.slide = new THREE.Group(); parts.slide.forEach(m => this.slide.add(m)); this.group.add(this.slide);
+    this.hammer = new THREE.Group(); this.hammer.position.copy(HAMMER_PIVOT);
+    parts.hammer.forEach(m => { m.geometry.translate(-HAMMER_PIVOT.x, -HAMMER_PIVOT.y, -HAMMER_PIVOT.z); this.hammer.add(m); });
+    this.group.add(this.hammer);
+    this.magMat = parts.mag.material;
+    this.magGeomGun = parts.mag.geometry;                                   // pistol space
+    this.magGeomLocal = parts.mag.geometry.clone().applyMatrix4(
+      new THREE.Matrix4().compose(MAG_CENTER, magFrameQuat, new THREE.Vector3(1, 1, 1)).invert());
+    this.magMesh = new THREE.Mesh(this.magGeomGun, this.magMat); this.magMesh.castShadow = true;
+    this.group.add(this.magMesh);
+    this.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+    // muzzle flash: additive cone + a light that is always present (intensity 0) so shaders never recompile
+    this.flash = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.1, 8, 1, true),
+      new THREE.MeshBasicMaterial({ color: '#ffd38a', transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    this.flash.rotation.x = -Math.PI / 2; this.flash.position.copy(MUZZLE).add(new THREE.Vector3(0, 0, -0.05));
+    this.flash.visible = false; this.group.add(this.flash);
+    this.light = new THREE.PointLight('#ffb15c', 0, 5, 2); this.light.position.copy(MUZZLE); this.group.add(this.light);
+    this.flashT = 0;
+
+    this.body = new CANNON.Body({ mass: 1.1, material: matWorld, linearDamping: 0.05, angularDamping: 0.1,
+      collisionFilterGroup: G.GUN, collisionFilterMask: G.STATIC | G.DYN | G.HAND });
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.016, 0.022, 0.106)), new CANNON.Vec3(0, -0.02, -0.08));
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.016, 0.06, 0.022)), new CANNON.Vec3(0, -0.098, 0.012),
+      new CANNON.Quaternion().setFromEuler(-RAKE, 0, 0));
+    world.addBody(this.body);
+    this.body.addEventListener('collide', (e) => {
+      const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      if (v > 1 && !this.holder) playAt(syn.thud, this.body.position, { gain: Math.min(0.8, v * 0.15), rate: 1.6 });
+    });
+
+    this.mags = [];
+    this.brass = [];
+    this.holes = [];
+    this.reset();
+  }
+  reset() {
+    if (this.holder) this.drop();
+    if (this.slideHand) this.releaseSlide();
+    this.body.position.set(-4, 0.97, 1.1);
+    this.body.quaternion.setFromEuler(0, Math.PI / 2, Math.PI / 2, 'YZX');
+    this.body.velocity.setZero(); this.body.angularVelocity.setZero();
+    this.mag = { rounds: MAG_CAP };
+    this.chambered = false;          // start with an empty chamber: rack the slide to load
+    this.slidePos = 0; this.slideLocked = false; this.reachedRear = false;
+    this.hammerCocked = false; this.hammerAngle = HAMMER_DOWN;
+    this.cycleT = 0; this.magInsert = 0;
+    this.trigger = 0; this.triggerReset = true;
+    for (const m of this.mags.slice()) this.removeMag(m);
+    for (let i = 0; i < 3; i++) {
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 2));
+      this.spawnMag(new THREE.Vector3(-4, 0.92, 1.55 + i * 0.13), q, MAG_CAP, new THREE.Vector3());
+    }
+  }
+  // --- frames ---
+  toWorld(v, out = new THREE.Vector3()) {
+    _cv.set(v.x, v.y, v.z); this.body.pointToWorldFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z);
+  }
+  dirWorld(v, out = new THREE.Vector3()) {
+    _cv.set(v.x, v.y, v.z); this.body.vectorToWorldFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z);
+  }
+  toLocal(v, out = new THREE.Vector3()) {
+    _cv.set(v.x, v.y, v.z); this.body.pointToLocalFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z);
+  }
+  // --- holding ---
+  tryGrab(hand) {
+    const hc = hand.body.pointToWorldFrame(hand.body.shapeOffsets[0]);
+    const h = _v1.set(hc.x, hc.y, hc.z);
+    if (!this.holder) {
+      const nearGrip = h.distanceTo(this.toWorld(GRIP_POINT, _v2)) < 0.15;
+      const nearGun = h.distanceTo(_v2.set(this.body.position.x, this.body.position.y, this.body.position.z)) < 0.2;
+      if (nearGrip || nearGun) { this.attach(hand); return true; }
+      return false;
+    }
+    if (this.holder !== hand && !this.slideHand) {
+      const sp = this.toWorld(_v2.copy(SLIDE_GRAB).setZ(SLIDE_GRAB.z + this.slidePos));
+      if (h.distanceTo(sp) < 0.11) { this.grabSlide(hand); return true; }
+    }
+    return false;
+  }
+  attach(hand) {
+    hand.release();
+    this.holder = hand;
+    this.snapToHand();
+    this.constraint = new CANNON.LockConstraint(hand.body, this.body, { maxForce: 1e4 });
+    this.constraint.collideConnected = false;
+    world.addConstraint(this.constraint);
+    this.triggerReset = true;
+    hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 50);
+  }
+  snapToHand() {
+    const hb = this.holder.body;
+    const hq = _hq.set(hb.quaternion.x, hb.quaternion.y, hb.quaternion.z, hb.quaternion.w);
+    const p = _v1.copy(ATTACH_P).applyQuaternion(hq);
+    const q = _gq.copy(hq).multiply(ATTACH_Q);
+    this.body.position.set(hb.position.x + p.x, hb.position.y + p.y, hb.position.z + p.z);
+    this.body.quaternion.set(q.x, q.y, q.z, q.w);
+    this.body.velocity.copy(hb.velocity); this.body.angularVelocity.copy(hb.angularVelocity);
+  }
+  drop() {
+    if (this.constraint) world.removeConstraint(this.constraint);
+    this.constraint = null;
+    if (this.slideHand) this.releaseSlide();
+    this.holder = null;
+    this.trigger = 0;
+  }
+  // --- slide ---
+  grabSlide(hand) {
+    hand.release();
+    this.slideHand = hand;
+    hand.body.collisionFilterMask = G.STATIC | G.DYN;          // the slide hand passes through the gun
+    this.handZ0 = this.toLocal(hand.targetPos).z;
+    this.slideStart = this.slidePos;
+    if (this.slideLocked) { this.slideLocked = false; this.reachedRear = true; }
+    this.cycleT = 0;
+    const hc = hand.body.position;
+    this.slideGrabLocal = this.toLocal(_v1.set(hc.x, hc.y, hc.z)).sub(_v2.set(0, 0, this.slidePos));
+    hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 30);
+  }
+  releaseSlide() {
+    const hand = this.slideHand;
+    this.slideHand = null;
+    if (hand?.active) hand.body.collisionFilterMask = G.STATIC | G.DYN | G.GUN;
+    if (this.reachedRear && this.mag && this.mag.rounds === 0) { this.slideLocked = true; this.slidePos = SLIDE_TRAVEL; }
+  }
+  placeSlideHand(mesh) {
+    // draw the slide hand on the slide where it grabbed
+    const p = this.toWorld(_v1.copy(this.slideGrabLocal).add(_v2.set(0, 0, this.slidePos)));
+    mesh.position.copy(p);
+  }
+  reachRear() {
+    if (this.reachedRear) return;
+    this.reachedRear = true;
+    this.hammerCocked = true;
+    if (this.chambered) { this.chambered = false; this.spawnBrass(true); }   // a live round flies out
+  }
+  slideHome(fromManual) {
+    this.slidePos = 0;
+    if (this.reachedRear && this.mag && this.mag.rounds > 0) { this.mag.rounds--; this.chambered = true; }
+    if (fromManual) playHandling('slideFwd', this.toWorld(SLIDE_GRAB), 0.9);
+    this.reachedRear = false;
+  }
+  rack() {   // desktop shortcut: full manual cycle
+    if (!this.holder) return;
+    this.reachRear();
+    playHandling('slideBack', this.toWorld(SLIDE_GRAB), 0.9);
+    this.slideLocked = false; this.slidePos = SLIDE_TRAVEL;
+  }
+  // --- magazines ---
+  spawnMag(pos, quat, rounds, vel) {
+    const mesh = new THREE.Mesh(this.magGeomLocal, this.magMat); mesh.castShadow = true;
+    const body = new CANNON.Body({ mass: 0.25, material: matWorld, shape: new CANNON.Box(MAG_HALF),
+      collisionFilterGroup: G.DYN, collisionFilterMask: ALL, angularDamping: 0.1 });
+    body.position.set(pos.x, pos.y, pos.z); body.quaternion.set(quat.x, quat.y, quat.z, quat.w);
+    body.velocity.set(vel.x, vel.y, vel.z);
+    world.addBody(body); scene.add(mesh);
+    mesh.position.copy(pos); mesh.quaternion.copy(quat);
+    const entry = { body, mesh, kind: 'box', half: MAG_HALF, isMag: true, rounds };
+    body.addEventListener('collide', (e) => {
+      const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      if (v > 1.2) playAt(syn.thud, body.position, { gain: Math.min(0.6, v * 0.12), rate: 2.2 });
+    });
+    dynamics.push(entry); grabbables.push(entry); this.mags.push(entry);
+    return entry;
+  }
+  removeMag(entry) {
+    for (const h of [hands.left, hands.right]) if (h.held?.d === entry) h.release();
+    world.removeBody(entry.body); scene.remove(entry.mesh);
+    for (const list of [dynamics, grabbables, this.mags]) { const i = list.indexOf(entry); if (i >= 0) list.splice(i, 1); }
+  }
+  ejectMag() {
+    if (!this.mag) return;
+    const q = _gq.set(this.body.quaternion.x, this.body.quaternion.y, this.body.quaternion.z, this.body.quaternion.w).multiply(magFrameQuat);
+    const pos = this.toWorld(_v1.copy(MAG_CENTER).addScaledVector(MAG_UP, -0.03));
+    const vel = this.dirWorld(MAG_UP, _v2).multiplyScalar(-1.4).add(new THREE.Vector3(this.body.velocity.x, this.body.velocity.y, this.body.velocity.z));
+    this.spawnMag(pos, q, this.mag.rounds, vel);
+    this.mag = null;
+    playHandling('magOut', this.toWorld(MAGWELL), 0.9);
+    this.holder?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.3, 30);
+  }
+  insertMag(entry, hand) {
+    if (this.mag) return;
+    hand?.release();
+    const rounds = entry.rounds;
+    this.removeMag(entry);
+    this.mag = { rounds };
+    this.magInsert = 0.05;
+    playHandling('magIn', this.toWorld(MAGWELL), 1.0);
+    for (const h of [hand, this.holder]) h?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.7, 40);
+  }
+  checkMagInsert() {
+    if (!this.holder || this.mag) return;
+    const well = this.toWorld(MAGWELL, _v1);
+    const up = this.dirWorld(MAG_UP, _v2);
+    for (const hand of [hands.left, hands.right]) {
+      const e = hand.held?.d;
+      if (!e?.isMag || hand === this.holder) continue;
+      _cv.set(0, MAG_HALF.y, 0);
+      const top = e.body.pointToWorldFrame(_cv);
+      const mu = e.body.vectorToWorldFrame(new CANNON.Vec3(0, 1, 0));
+      const d = Math.hypot(top.x - well.x, top.y - well.y, top.z - well.z);
+      if (d < 0.05 && mu.x * up.x + mu.y * up.y + mu.z * up.z > 0.8) { this.insertMag(e, hand); return; }
+    }
+  }
+  // --- firing ---
+  setTrigger(v) {
+    this.trigger = v;
+    if (v > 0.75 && this.triggerReset) { this.triggerReset = false; this.pullTrigger(); }
+    if (v < 0.35) this.triggerReset = true;
+  }
+  pullTrigger() {
+    if (!this.holder || this.slidePos > 0.002 || this.slideLocked || this.cycleT > 0 || !this.hammerCocked) return;
+    this.hammerCocked = false;
+    if (!this.chambered) { playAt(syn.dry, this.toWorld(HAMMER_PIVOT), { gain: 0.7, ref: 0.5 }); return; }
+    this.chambered = false;
+    this.fire();
+    this.cycleT = 1e-4; this.reachedRear = false;
+  }
+  fire() {
+    const muzzle = this.toWorld(MUZZLE);
+    const dir = this.dirWorld(new THREE.Vector3(0, 0, -1));
+    const rate = 0.96 + Math.random() * 0.08;
+    playAt(sfx.shot, muzzle, { gain: 1.5, ref: 2, reverb: 0.45, rate });
+    playAt(syn.shot, muzzle, { gain: 0.75, ref: 2, reverb: 0.6, rate });
+    this.flash.visible = true; this.flash.rotation.y = Math.random() * Math.PI; this.flash.scale.setScalar(0.8 + Math.random() * 0.5);
+    this.light.intensity = 6; this.flashT = 0.045;
+
+    // recoil: momentum back along the bore, plus muzzle flip about the pistol's side axis.
+    // It goes into the hand body, so the arm spring brings it back and passes the push on to your body.
+    const hb = this.holder.body;
+    const side = this.dirWorld(new THREE.Vector3(1, 0, 0));
+    for (const b of [hb, this.body]) {
+      b.velocity.x -= dir.x * RECOIL_V; b.velocity.y -= dir.y * RECOIL_V; b.velocity.z -= dir.z * RECOIL_V;
+      b.angularVelocity.x += side.x * RECOIL_FLIP; b.angularVelocity.y += side.y * RECOIL_FLIP; b.angularVelocity.z += side.z * RECOIL_FLIP;
+    }
+    this.holder.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1.0, 70);
+
+    // bullet
+    const res = new CANNON.RaycastResult();
+    const from = new CANNON.Vec3(muzzle.x, muzzle.y, muzzle.z);
+    const to = new CANNON.Vec3(muzzle.x + dir.x * 120, muzzle.y + dir.y * 120, muzzle.z + dir.z * 120);
+    world.raycastClosest(from, to, { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, res);
+    if (!res.hasHit) return;
+    const hp = res.hitPointWorld, n = res.hitNormalWorld, b = res.body;
+    const hit = new THREE.Vector3(hp.x, hp.y, hp.z);
+    if (b.mass > 0) {
+      b.applyImpulse(new CANNON.Vec3(dir.x * BULLET_IMPULSE, dir.y * BULLET_IMPULSE, dir.z * BULLET_IMPULSE),
+        new CANNON.Vec3(hp.x - b.position.x, hp.y - b.position.y, hp.z - b.position.z));
+      if (plateBodies.has(b)) playAt(syn.ping, hit, { gain: 1.2, ref: 3, reverb: 0.3, rate: 0.95 + Math.random() * 0.1 });
+      else playAt(syn.thud, hit, { gain: 0.8, ref: 2 });
+    } else {
+      playAt(syn.thud, hit, { gain: 0.9, ref: 2, rate: 0.8 + Math.random() * 0.3 });
+      this.addHole(hit, new THREE.Vector3(n.x, n.y, n.z));
+    }
+  }
+  addHole(p, n) {
+    const m = new THREE.Mesh(_holeGeo, _holeMat);
+    m.position.copy(p).addScaledVector(n, 0.002);
+    m.lookAt(_v1.copy(m.position).add(n));
+    scene.add(m);
+    this.holes.push(m);
+    if (this.holes.length > 80) scene.remove(this.holes.shift());
+  }
+  spawnBrass(live) {
+    const p = this.toWorld(EJECT_PORT);
+    const right = this.dirWorld(new THREE.Vector3(1, 0, 0)), up = this.dirWorld(new THREE.Vector3(0, 1, 0)), back = this.dirWorld(new THREE.Vector3(0, 0, 1));
+    const len = live ? 0.032 : 0.023;
+    const mesh = new THREE.Mesh(live ? _roundGeo : _caseGeo, _brassMat); mesh.castShadow = true;
+    const body = new CANNON.Body({ mass: 0.012, material: matWorld, shape: new CANNON.Cylinder(0.006, 0.006, len, 8),
+      collisionFilterGroup: G.DEBRIS, collisionFilterMask: G.STATIC | G.DYN, linearDamping: 0.05, angularDamping: 0.05 });
+    body.position.set(p.x, p.y, p.z);
+    body.quaternion.copy(this.body.quaternion);
+    const v = new THREE.Vector3(this.body.velocity.x, this.body.velocity.y, this.body.velocity.z)
+      .addScaledVector(right, 2.2 + Math.random() * 0.8).addScaledVector(up, 1.6 + Math.random() * 0.6).addScaledVector(back, 0.4);
+    body.velocity.set(v.x, v.y, v.z);
+    body.angularVelocity.set((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30);
+    let tinks = 0;
+    body.addEventListener('collide', (e) => {
+      const iv = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      if (iv > 0.35 && tinks < 5) { tinks++; playAt(syn.tink[(Math.random() * 3) | 0], body.position, { gain: Math.min(0.5, iv * 0.18), rate: 0.9 + Math.random() * 0.25, ref: 0.6 }); }
+    });
+    world.addBody(body); scene.add(mesh);
+    this.brass.push({ body, mesh });
+    if (this.brass.length > 30) { const old = this.brass.shift(); world.removeBody(old.body); scene.remove(old.mesh); }
+  }
+  // --- per frame ---
+  update(dt) {
+    if (this.holder && !this.holder.active) this.drop();
+    if (this.slideHand && (!this.holder || !this.slideHand.active)) this.releaseSlide();
+
+    if (this.slideHand) {
+      const lz = this.toLocal(this.slideHand.targetPos).z;
+      const pos = Math.max(0, Math.min(SLIDE_TRAVEL, this.slideStart + (lz - this.handZ0)));
+      if (pos >= SLIDE_TRAVEL * 0.92 && !this.reachedRear) { this.reachRear(); playHandling('slideBack', this.toWorld(SLIDE_GRAB), 0.9); }
+      if (pos <= 0.0005 && this.slidePos > 0.0005) {
+        if (this.reachedRear) this.slideHome(true); else this.slidePos = 0;
+      }
+      this.slidePos = pos;
+    } else if (this.cycleT > 0) {
+      // fired: the slide blows back and returns in ~70 ms, ejecting the case and feeding the next round
+      const T = 0.07, half = T / 2;
+      this.cycleT += dt;
+      if (this.cycleT < half) this.slidePos = SLIDE_TRAVEL * (this.cycleT / half);
+      else {
+        if (!this.reachedRear) {
+          this.reachRear(); this.spawnBrass(false);
+          if (this.mag && this.mag.rounds === 0) { this.slideLocked = true; this.cycleT = 0; this.slidePos = SLIDE_TRAVEL; }
+        }
+        if (this.cycleT > 0) {
+          this.slidePos = SLIDE_TRAVEL * Math.max(0, 1 - (this.cycleT - half) / half);
+          if (this.cycleT >= T) { this.cycleT = 0; this.slideHome(false); }
+        }
+      }
+    } else if (this.slidePos > 0 && !this.slideLocked) {
+      // let go of the slide: the recoil spring snaps it forward
+      this.slidePos = Math.max(0, this.slidePos - dt * 3.2);
+      if (this.slidePos === 0) { if (this.reachedRear) this.slideHome(true); }
+    }
+
+    if (this.magInsert > 0) this.magInsert = Math.max(0, this.magInsert - dt * 0.9);
+    this.checkMagInsert();
+
+    // visuals
+    this.group.position.copy(this.body.position);
+    this.group.quaternion.copy(this.body.quaternion);
+    this.slide.position.z = this.slidePos;
+    const hTarget = this.hammerCocked || this.slidePos > 0.004 ? 0 : HAMMER_DOWN;
+    this.hammerAngle += (hTarget - this.hammerAngle) * Math.min(1, dt * (hTarget === 0 ? 25 : 60));
+    this.hammer.rotation.x = this.hammerAngle;
+    this.magMesh.visible = !!this.mag;
+    this.magMesh.position.copy(MAG_UP).multiplyScalar(-this.magInsert);
+    if (this.flashT > 0) { this.flashT -= dt; if (this.flashT <= 0) { this.flash.visible = false; this.light.intensity = 0; } }
+    for (const b of this.brass) { b.mesh.position.copy(b.body.position); b.mesh.quaternion.copy(b.body.quaternion); }
+  }
+  get ammoText() { return `${this.mag ? this.mag.rounds : '–'}+${this.chambered ? 1 : 0}`; }
+}
+const _hq = new THREE.Quaternion(), _gq = new THREE.Quaternion();
+const _brassMat = new THREE.MeshStandardMaterial({ color: '#c9a24a', metalness: 0.85, roughness: 0.3 });
+const _caseGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.023, 10);
+const _roundGeo = (() => {
+  const g = new THREE.CylinderGeometry(0.004, 0.006, 0.032, 10);   // case + bullet, close enough at this size
+  return g;
+})();
+const _holeGeo = new THREE.CircleGeometry(0.008, 10);
+const _holeMat = new THREE.MeshBasicMaterial({ color: '#141414', polygonOffset: true, polygonOffsetFactor: -2 });
+
+import('./models/m1911.js').then(async ({ glb }) => {
+  const bin = Uint8Array.from(atob(glb), c => c.charCodeAt(0)).buffer;
+  const g = await gltfLoader.parseAsync(bin, '');
+  g.scene.updateMatrixWorld(true);
+  const parts = { frame: [], slide: [], hammer: [], mag: null };
+  for (const node of g.scene.children) {
+    const name = node.name.toLowerCase();
+    node.traverse(o => {
+      if (!o.isMesh) return;
+      const mat = o.material.clone();
+      if (mat.name !== 'wood') { mat.metalness = 0.65; mat.roughness = 0.42; }
+      if (mat.name === 'metal') mat.color.set('#9aa1a6');
+      const mesh = new THREE.Mesh(o.geometry.clone().applyMatrix4(o.matrixWorld), mat);
+      if (name.includes('slide')) parts.slide.push(mesh);
+      else if (name.includes('hammer')) parts.hammer.push(mesh);
+      else if (name.includes('magazine')) parts.mag = mesh;
+      else parts.frame.push(mesh);
+    });
+  }
+  pistol = new Pistol(parts);
+}).catch(err => console.warn('Pistol model failed to load.', err));
+
+// debug handle for console tinkering
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, actx, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+const spdEl = document.getElementById('spd'), modeEl = document.getElementById('mode'), ammoEl = document.getElementById('ammo');
+let hudTimer = 0;
+
+renderer.setAnimationLoop(() => frame(Math.min(clock.getDelta(), 0.1), true));
+// console helper: advance the game without rendering, e.g. vaultyard.sim(2)
+window.vaultyard.sim = (seconds) => { for (let t = 0; t < seconds; t += H) frame(H, false); };
+window.vaultyard.draw = () => frame(0, true);
+
+function frame(dt, draw) {
+  readHead(dt);
+  const sprinting = readInput(dt);
+  updateHandTargets(dt);
+
+  accumulator += dt;
+  let n = 0;
+  while (accumulator >= H && n < 6) {
+    stepPlayer(H, sprinting && moveWorld.lengthSq() > 0.01);
+    syncDolly();
+    for (const hand of [hands.left, hands.right]) {
+      if (!hand.active) continue;
+      hand.computeTarget(dolly.matrixWorld, _dq);
+      hand.drive(H);
+    }
+    world.step(H);
+    updateHandContacts();
+    simTime += H;
+    accumulator -= H; n++;
+  }
+  if (n === 6) accumulator = 0;
+
+  if (player.position.y < -15) respawn();
+
+  syncDolly();
+  if (!renderer.xr.isPresenting) {
+    camera.position.copy(headLocal);
+    camera.rotation.set(pitch, 0, 0);
+    const targetFov = sprinting && moveWorld.lengthSq() > 0.01 && grounded ? 84 : 75;
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 8);
+    camera.updateProjectionMatrix();
+  }
+  for (const hand of [hands.left, hands.right]) {
+    if (hand.active) hand.computeTarget(dolly.matrixWorld, _dq);
+    hand.sync();
+  }
+  pistol?.update(dt);
+  for (const d of dynamics) { d.mesh.position.copy(d.body.position); d.mesh.quaternion.copy(d.body.quaternion); }
+  if (draw) updateListener();
+
+  ring.rotation.y += dt * 1.2;
+  if (!reachedGoal && player.position.distanceTo(new CANNON.Vec3(goalTop[0], goalTop[2], goalTop[1])) < 1.4) {
+    reachedGoal = true;
+    ring.material.color.set('#5fd4c4'); ring.material.emissive.set('#2bd1b8');
+    for (const h of [hands.left, hands.right]) h.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1, 200);
+  }
+
+  hudTimer -= dt;
+  if (hudTimer <= 0) {
+    hudTimer = 0.1;
+    spdEl.textContent = Math.hypot(player.velocity.x, player.velocity.z).toFixed(1);
+    ammoEl.textContent = pistol?.holder ? pistol.ammoText : '–';
+    modeEl.textContent = (hands.left.anchored || hands.right.anchored) ? 'Climb' : !grounded ? 'Air' :(sprinting && moveWorld.lengthSq() > 0.01 ? 'Sprint' : 'Walk');
+  }
+
+  if (draw) renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
