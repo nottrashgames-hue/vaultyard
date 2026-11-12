@@ -88,8 +88,8 @@
       <dt>Trigger</dt><dd>Fire</dd>
       <dt>B or Y</dt><dd>Drop the magazine</dd>
       <dt>Other hand</dt><dd>Grip the slide, pull back, let go to chamber</dd>
-      <dt>Reload</dt><dd>Push a held magazine into the bottom of the grip</dd>
-      <dt>Damage sphere</dt><dd>The floating sphere past the bench. Each shot carves an entry, a wound channel and, if the round gets through, an exit wound.</dd>
+      <dt>Reload</dt><dd>Line a held magazine up under the grip, then slide it all the way in until it clicks. Let go halfway and it falls out.</dd>
+      <dt>Damage sphere</dt><dd>The floating sphere past the bench. Each shot carves a small entry, a wound channel and, if the round gets through, an exit wound. Wounds bleed down the surface and drip; blood stays where it lands.</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
       <dt>Desktop</dt><dd>F fire · E rack · Q drop mag · X mag from pouch · Z load mag from other hand</dd>
     </dl>
@@ -547,7 +547,7 @@ class PhysHand {
   setCurl(trigger, squeeze, thumb, dt) {
     if (pistol?.holder === this) { thumb = 0.65; squeeze = 0.95; trigger = 0.3 + trigger * 0.5; }
     else if (pistol?.slideHand === this) { thumb = 0.8; squeeze = 0.85; trigger = 0.85; }
-    const hold = this.held ? 0.75 : 0;
+    const hold = this.held || pistol?.seat?.hand === this ? 0.75 : 0;
     this.curlTarget[0] = Math.max(0.2, thumb, hold);
     this.curlTarget[1] = Math.max(0.15, trigger, hold);
     for (let i = 2; i < 5; i++) this.curlTarget[i] = Math.max(0.15, squeeze, hold);
@@ -569,12 +569,8 @@ class PhysHand {
   }
   teleport() {
     const b = this.body;
-    if (pistol?.holder === this) {
-      // keep the pistol in hand through snap turns and snaps
-      b.position.set(this.targetPos.x, this.targetPos.y, this.targetPos.z);
-      b.quaternion.set(this.targetQuat.x, this.targetQuat.y, this.targetQuat.z, this.targetQuat.w);
-      b.velocity.setZero(); b.angularVelocity.setZero();
-      pistol.snapToHand();
+    if (pistol?.holder === this) {   // keep the pistol in hand through snap turns and snaps
+      pistol.placeAtTarget();
       this.needsSnap = false;
       return;
     }
@@ -604,6 +600,7 @@ class PhysHand {
       b.velocity.setZero(); b.angularVelocity.setZero();
       return;
     }
+    if (pistol?.holder === this) { pistol.driveHeld(h, tvx, tvy, tvz); return; }
     if (this.needsSnap || d2 > HAND_SNAP_DIST * HAND_SNAP_DIST) { this.teleport(); return; }
 
     // linear: PD spring from hand to controller, with gravity carried by the arm
@@ -631,19 +628,15 @@ class PhysHand {
     else {
       let w = angle / h * 0.8;
       if (w > HAND_MAX_W) w = HAND_MAX_W;
-      if (pistol?.holder === this) {
-        // wrist is springy while gripping the pistol, so recoil flips the muzzle and it settles back
-        const k = 0.28;
-        b.angularVelocity.x += (_q2.x / s * w - b.angularVelocity.x) * k;
-        b.angularVelocity.y += (_q2.y / s * w - b.angularVelocity.y) * k;
-        b.angularVelocity.z += (_q2.z / s * w - b.angularVelocity.z) * k;
-      } else b.angularVelocity.set(_q2.x / s * w, _q2.y / s * w, _q2.z / s * w);
+      b.angularVelocity.set(_q2.x / s * w, _q2.y / s * w, _q2.z / s * w);
     }
   }
   sync() {
+    if (pistol?.holder === this) pistol.placeHand(this.body);
     this.mesh.position.copy(this.body.position);
     this.mesh.quaternion.copy(this.body.quaternion);
     if (pistol?.slideHand === this) pistol.placeSlideHand(this.mesh);
+    if (pistol?.seat?.hand === this) pistol.placeSeatHand(this.mesh);
     const sep = this.mesh.position.distanceTo(this.targetPos);
     this.ghost.visible = this.active && sep > 0.03;
     this.ghost.position.copy(this.targetPos);
@@ -684,6 +677,7 @@ class PhysHand {
     this.held = { c, d: entry };
   }
   release() {
+    if (pistol?.seat?.hand === this) pistol.dropSeat();
     if (this.held?.d?.isMag && ammoPouch?.near(this)) ammoPouch.stow(this);   // let go inside the pouch: put it away
     if (pistol?.holder === this) pistol.drop();
     if (pistol?.slideHand === this) pistol.releaseSlide();
@@ -808,6 +802,7 @@ function respawn() {
   yaw = 0; pitch = 0;
   pistol?.reset();
   damageSphere.reset();
+  splatMesh.count = 0; splatNext = 0; bloodDrops.length = 0;
   for (const d of dynamics) {
     if (!d.spawnPos) continue;
     d.body.position.copy(d.spawnPos); d.body.quaternion.copy(d.spawnQuat);
@@ -1010,6 +1005,7 @@ function updateHandContacts() {
   for (const c of world.contacts) {
     for (const hand of [hands.left, hands.right])
       if (c.bi === hand.body || c.bj === hand.body) hand.touching = true;
+    if (pistol?.holder && (c.bi === pistol.body || c.bj === pistol.body)) pistol.holder.touching = true;
   }
 }
 
@@ -1156,7 +1152,9 @@ const MUZZLE = new THREE.Vector3(0, -0.012, -0.196);
 const EJECT_PORT = new THREE.Vector3(0.014, -0.004, -0.045);
 const HAMMER_PIVOT = new THREE.Vector3(0.0082, -0.0108, 0.0224);
 const HAMMER_DOWN = -1.0;
-const RECOIL_V = 1.8, RECOIL_FLIP = 11, BULLET_IMPULSE = 3.5;
+const RECOIL_V = 2.6, RECOIL_FLIP = 15, BULLET_IMPULSE = 3.5;
+const GUN_SERVO = 0.85, GUN_SERVO_RECOIL = 0.18, GUN_GAIN = 0.7, GUN_MAX_W = 60;   // held-pistol tracking
+const MAG_ALIGN_DEG = 22, MAG_ALIGN_OFFSET = 0.015, MAG_TRAVEL = 0.122;    // loading: how well it must line up, how far it slides
 const magFrameQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -RAKE);
 // Attach pose: the pistol's grip axis lies along the controller's grip axis (-Z, toward the thumb),
 // the barrel points out past the fingers, and GRIP_POINT sits at the centre of the fist.
@@ -1250,29 +1248,83 @@ class Pistol {
     }
     return false;
   }
+  // While held, the pistol itself is the physics object your arm drives (a stiff, critically damped
+  // spring to the controller's grip pose). The hand is carried on the pistol, so nothing wobbles
+  // between them. World contacts on the pistol still push back on your arm and body.
   attach(hand) {
     hand.release();
     this.holder = hand;
-    this.snapToHand();
-    this.constraint = new CANNON.LockConstraint(hand.body, this.body, { maxForce: 1e4 });
-    this.constraint.collideConnected = false;
-    world.addConstraint(this.constraint);
+    hand.body.type = CANNON.Body.KINEMATIC;
+    hand.body.collisionFilterMask = 0;
+    this.placeAtTarget();
     this.triggerReset = true;
+    this.recoilT = 0;
     hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 50);
   }
-  snapToHand() {
-    const hb = this.holder.body;
-    const hq = _hq.set(hb.quaternion.x, hb.quaternion.y, hb.quaternion.z, hb.quaternion.w);
-    const p = _v1.copy(ATTACH_P).applyQuaternion(hq);
-    const q = _gq.copy(hq).multiply(ATTACH_Q);
-    this.body.position.set(hb.position.x + p.x, hb.position.y + p.y, hb.position.z + p.z);
-    this.body.quaternion.set(q.x, q.y, q.z, q.w);
-    this.body.velocity.copy(hb.velocity); this.body.angularVelocity.copy(hb.angularVelocity);
+  targetPose(outP, outQ) {
+    const h = this.holder;
+    outQ.copy(h.targetQuat).multiply(ATTACH_Q);
+    outP.copy(ATTACH_P).applyQuaternion(h.targetQuat).add(h.targetPos);
+  }
+  placeAtTarget() {
+    this.targetPose(_tp, _tq);
+    this.body.position.set(_tp.x, _tp.y, _tp.z);
+    this.body.quaternion.set(_tq.x, _tq.y, _tq.z, _tq.w);
+    this.body.velocity.setZero(); this.body.angularVelocity.setZero();
+    this.placeHand(this.holder.body);
+  }
+  placeHand(hb) {
+    // hand pose = pistol pose * inverse(attach)
+    const gq = _gq.set(this.body.quaternion.x, this.body.quaternion.y, this.body.quaternion.z, this.body.quaternion.w);
+    const hq = _hq.copy(gq).multiply(_attachInv);
+    const off = _v1.copy(ATTACH_P).applyQuaternion(hq);
+    hb.position.set(this.body.position.x - off.x, this.body.position.y - off.y, this.body.position.z - off.z);
+    hb.quaternion.set(hq.x, hq.y, hq.z, hq.w);
+    hb.velocity.copy(this.body.velocity); hb.angularVelocity.copy(this.body.angularVelocity);
+  }
+  driveHeld(h, tvx, tvy, tvz) {
+    const b = this.body;
+    this.targetPose(_tp, _tq);
+    const dx = _tp.x - b.position.x, dy = _tp.y - b.position.y, dz = _tp.z - b.position.z;
+    if (this.holder.needsSnap || dx * dx + dy * dy + dz * dz > HAND_SNAP_DIST * HAND_SNAP_DIST) {
+      this.placeAtTarget(); this.holder.needsSnap = false; return;
+    }
+    // velocity servo: each step it closes most of the gap (it can't overshoot or ring like a stiff spring).
+    // Just after a shot it eases off so the recoil kick plays out before it pulls back.
+    const k = this.recoilT > 0 ? GUN_SERVO_RECOIL : GUN_SERVO;
+    const nvx = b.velocity.x + (tvx + dx / h * GUN_GAIN - b.velocity.x) * k;
+    const nvy = b.velocity.y + (tvy + dy / h * GUN_GAIN - b.velocity.y) * k;
+    const nvz = b.velocity.z + (tvz + dz / h * GUN_GAIN - b.velocity.z) * k;
+    // the force that took is what your arm pushed with; the same goes back into your body
+    _f.set((nvx - b.velocity.x) * b.mass / h, (nvy - b.velocity.y) * b.mass / h, (nvz - b.velocity.z) * b.mass / h);
+    clampLen(_f, HAND_FMAX);
+    const carry = (b.mass + this.holder.body.mass) * GRAVITY;
+    player.force.x -= _f.x; player.force.y -= _f.y + carry; player.force.z -= _f.z;
+    b.velocity.set(nvx, nvy + GRAVITY * h, nvz);
+    // rotation: lock straight onto the controller, except just after a shot, when the wrist gives
+    _q1.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w).invert();
+    _q2.copy(_tq).multiply(_q1);
+    if (_q2.w < 0) { _q2.x = -_q2.x; _q2.y = -_q2.y; _q2.z = -_q2.z; _q2.w = -_q2.w; }
+    const angle = 2 * Math.acos(Math.min(1, _q2.w)), s = Math.sqrt(Math.max(0, 1 - _q2.w * _q2.w));
+    let wx = 0, wy = 0, wz = 0;
+    if (s > 1e-5) { const w = Math.min(GUN_MAX_W, angle / h); wx = _q2.x / s * w; wy = _q2.y / s * w; wz = _q2.z / s * w; }
+    if (this.recoilT > 0) {
+      const k = 0.22;
+      b.angularVelocity.x += (wx - b.angularVelocity.x) * k;
+      b.angularVelocity.y += (wy - b.angularVelocity.y) * k;
+      b.angularVelocity.z += (wz - b.angularVelocity.z) * k;
+    } else b.angularVelocity.set(wx, wy, wz);
+    this.placeHand(this.holder.body);
   }
   drop() {
-    if (this.constraint) world.removeConstraint(this.constraint);
-    this.constraint = null;
     if (this.slideHand) this.releaseSlide();
+    if (this.seat) this.dropSeat();
+    const h = this.holder;
+    if (h) {
+      h.body.type = CANNON.Body.DYNAMIC;
+      h.body.collisionFilterMask = h.active ? (G.STATIC | G.DYN | G.GUN) : 0;
+      h.body.velocity.copy(this.body.velocity);
+    }
     this.holder = null;
     this.trigger = 0;
   }
@@ -1360,19 +1412,92 @@ class Pistol {
     playHandling('magIn', this.toWorld(MAGWELL), 1.0);
     for (const h of [hand, this.holder]) h?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.7, 40);
   }
+  // Loading: the magazine top has to meet the magwell lined up (angle and offset); then it rides the
+  // magwell axis and you push it the whole 12 cm until it clicks. Let go partway and it slides back out.
   checkMagInsert() {
-    if (!this.holder || this.mag) return;
-    const well = this.toWorld(MAGWELL, _v1);
-    const up = this.dirWorld(MAG_UP, _v2);
+    if (!this.holder || this.mag || this.seat) return;
+    const gq = _gq.set(this.body.quaternion.x, this.body.quaternion.y, this.body.quaternion.z, this.body.quaternion.w);
+    const ideal = _hq.copy(gq).multiply(magFrameQuat);
     for (const hand of [hands.left, hands.right]) {
       const e = hand.held?.d;
       if (!e?.isMag || hand === this.holder) continue;
-      _cv.set(0, MAG_HALF.y, 0);
-      const top = e.body.pointToWorldFrame(_cv);
-      const mu = e.body.vectorToWorldFrame(new CANNON.Vec3(0, 1, 0));
-      const d = Math.hypot(top.x - well.x, top.y - well.y, top.z - well.z);
-      if (d < 0.05 && mu.x * up.x + mu.y * up.y + mu.z * up.z > 0.8) { this.insertMag(e, hand); return; }
+      const mq = e.body.quaternion;
+      const dot = Math.abs(ideal.x * mq.x + ideal.y * mq.y + ideal.z * mq.z + ideal.w * mq.w);
+      if (2 * Math.acos(Math.min(1, dot)) > MAG_ALIGN_DEG * Math.PI / 180) continue;
+      const rel = this.toLocal(e.body.position, _v1).sub(MAG_CENTER);   // mag centre relative to seated, pistol space
+      const depth = -rel.dot(MAG_UP);                                    // how far below seated
+      const lateral = rel.addScaledVector(MAG_UP, depth).length();
+      if (lateral < MAG_ALIGN_OFFSET && depth > MAG_TRAVEL - 0.03 && depth < MAG_TRAVEL + 0.02) { this.startSeat(e, hand, depth); return; }
     }
+  }
+  startSeat(entry, hand, depth) {
+    world.removeConstraint(hand.held.c);
+    hand.held = null;
+    hand.body.collisionFilterMask = G.STATIC | G.DYN;                  // the loading hand passes through the gun
+    entry.body.type = CANNON.Body.KINEMATIC;
+    entry.body.collisionFilterMask = 0;
+    entry.body.velocity.setZero(); entry.body.angularVelocity.setZero();
+    // remember where the hand sits on the magazine, to draw it there while loading
+    const eb = entry.body, hb = hand.body;
+    const inv = new THREE.Quaternion(eb.quaternion.x, eb.quaternion.y, eb.quaternion.z, eb.quaternion.w).invert();
+    const d0 = Math.min(depth, MAG_TRAVEL);
+    this.seat = {
+      entry, hand, depth: d0, depth0: d0,
+      up0: this.toLocal(hand.targetPos, _v2).dot(MAG_UP),
+      relP: new THREE.Vector3(hb.position.x - eb.position.x, hb.position.y - eb.position.y, hb.position.z - eb.position.z).applyQuaternion(inv),
+      relQ: inv.clone().multiply(new THREE.Quaternion(hb.quaternion.x, hb.quaternion.y, hb.quaternion.z, hb.quaternion.w)),
+    };
+    this.poseSeatedMag(entry, d0);
+    playAt(syn.cock, this.toWorld(MAGWELL), { gain: 0.4, rate: 0.7, ref: 0.5 });
+    hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.3, 20);
+  }
+  updateSeat() {
+    const st = this.seat;
+    if (!st) return;
+    const up = this.toLocal(st.hand.targetPos, _v2).dot(MAG_UP);
+    st.depth = Math.max(0, Math.min(MAG_TRAVEL + 0.03, st.depth0 - (up - st.up0)));
+    if (st.depth > MAG_TRAVEL + 0.02) {             // pulled back out: it's just a held magazine again
+      const { entry, hand } = st;
+      this.seat = null;
+      entry.body.type = CANNON.Body.DYNAMIC;
+      entry.body.collisionFilterMask = ALL;
+      hand.body.collisionFilterMask = G.STATIC | G.DYN | G.GUN;
+      hand.holdProp(entry);
+      return;
+    }
+    if (st.depth <= 0.002) {                        // fully home: click
+      const { entry, hand } = st;
+      this.seat = null;
+      hand.body.collisionFilterMask = G.STATIC | G.DYN | G.GUN;
+      this.insertMag(entry, null);
+      this.magInsert = 0;
+      return;
+    }
+    this.poseSeatedMag(st.entry, st.depth);
+  }
+  poseSeatedMag(entry, depth) {
+    const p = this.toWorld(_v1.copy(MAG_CENTER).addScaledVector(MAG_UP, -depth));
+    const q = _gq.set(this.body.quaternion.x, this.body.quaternion.y, this.body.quaternion.z, this.body.quaternion.w).multiply(magFrameQuat);
+    entry.body.position.set(p.x, p.y, p.z);
+    entry.body.quaternion.set(q.x, q.y, q.z, q.w);
+    entry.mesh.position.copy(p); entry.mesh.quaternion.copy(q);
+  }
+  placeSeatHand(mesh) {
+    const e = this.seat.entry.body;
+    const mq = _hq.set(e.quaternion.x, e.quaternion.y, e.quaternion.z, e.quaternion.w);
+    mesh.position.copy(this.seat.relP).applyQuaternion(mq).add(_v1.set(e.position.x, e.position.y, e.position.z));
+    mesh.quaternion.copy(mq).multiply(this.seat.relQ);
+  }
+  dropSeat() {
+    const st = this.seat;
+    if (!st) return;
+    this.seat = null;
+    if (st.hand.active) st.hand.body.collisionFilterMask = G.STATIC | G.DYN | G.GUN;
+    if (st.depth < 0.006) { this.insertMag(st.entry, null); return; }
+    st.entry.body.type = CANNON.Body.DYNAMIC;       // let go partway: it slides back out
+    st.entry.body.collisionFilterMask = ALL;
+    const v = this.dirWorld(MAG_UP, _v1).multiplyScalar(-0.6);
+    st.entry.body.velocity.set(this.body.velocity.x + v.x, this.body.velocity.y + v.y, this.body.velocity.z + v.z);
   }
   // --- firing ---
   setTrigger(v) {
@@ -1398,13 +1523,12 @@ class Pistol {
     this.light.intensity = 6; this.flashT = 0.045;
 
     // recoil: momentum back along the bore, plus muzzle flip about the pistol's side axis.
-    // It goes into the hand body, so the arm spring brings it back and passes the push on to your body.
-    const hb = this.holder.body;
+    // The arm spring brings it back and passes the push on to your body.
+    const b = this.body;
     const side = this.dirWorld(new THREE.Vector3(1, 0, 0));
-    for (const b of [hb, this.body]) {
-      b.velocity.x -= dir.x * RECOIL_V; b.velocity.y -= dir.y * RECOIL_V; b.velocity.z -= dir.z * RECOIL_V;
-      b.angularVelocity.x += side.x * RECOIL_FLIP; b.angularVelocity.y += side.y * RECOIL_FLIP; b.angularVelocity.z += side.z * RECOIL_FLIP;
-    }
+    b.velocity.x -= dir.x * RECOIL_V; b.velocity.y -= dir.y * RECOIL_V; b.velocity.z -= dir.z * RECOIL_V;
+    b.angularVelocity.x += side.x * RECOIL_FLIP; b.angularVelocity.y += side.y * RECOIL_FLIP; b.angularVelocity.z += side.z * RECOIL_FLIP;
+    this.recoilT = 0.14;
     this.holder.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1.0, 70);
 
     fireBullet(muzzle, dir, { penetration: 0.45, impulse: BULLET_IMPULSE, hole: (p, n) => this.addHole(p, n) });
@@ -1474,6 +1598,8 @@ class Pistol {
     }
 
     if (this.magInsert > 0) this.magInsert = Math.max(0, this.magInsert - dt * 0.9);
+    if (this.recoilT > 0) this.recoilT -= dt;
+    this.updateSeat();
     this.checkMagInsert();
 
     // visuals
@@ -1491,7 +1617,8 @@ class Pistol {
   get magCapacity() { return MAG_CAP; }   // the ammo pouch hands out full magazines of this size
   get ammoText() { return `${this.mag ? this.mag.rounds : '–'}+${this.chambered ? 1 : 0}`; }
 }
-const _hq = new THREE.Quaternion(), _gq = new THREE.Quaternion();
+const _hq = new THREE.Quaternion(), _gq = new THREE.Quaternion(), _tq = new THREE.Quaternion(), _tp = new THREE.Vector3();
+const _attachInv = ATTACH_Q.clone().invert();
 const _brassMat = new THREE.MeshStandardMaterial({ color: '#c9a24a', metalness: 0.85, roughness: 0.3 });
 const _caseGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.023, 10);
 const _roundGeo = (() => {
@@ -1611,7 +1738,7 @@ ammoPouch = new AmmoPouch();
 const damageables = [];
 const _dmgInv = new THREE.Matrix4();
 class DamageVolume {
-  constructor({ sdf, min, max, voxel = 0.011, skin = '#cbbba8', flesh = '#8e2a24', deep = '#3e0d0b', onHit = null }) {
+  constructor({ sdf, min, max, voxel = 0.008, skin = '#cbbba8', flesh = '#8e2a24', deep = '#3e0d0b', blood = '#7a0f0a', onHit = null }) {
     this.sdf = sdf; this.h = voxel; this.onHit = onHit;
     this.min = new THREE.Vector3(...min);
     const size = new THREE.Vector3(...max).sub(this.min);
@@ -1621,9 +1748,11 @@ class DamageVolume {
     for (let k = 0; k < this.P[2]; k++) for (let j = 0; j < this.P[1]; j++) for (let i = 0; i < this.P[0]; i++)
       this.f[this.idx(i, j, k)] = sdf(this.min.x + i * voxel, this.min.y + j * voxel, this.min.z + k * voxel);
     this.base = this.f.slice();
+    this.blood = new Float32Array(this.f.length);   // painted blood (trails running down from wounds)
+    this.wounds = [];                               // bleeding wounds, in local space
     this.C = 16;
     this.CN = this.N.map(n => Math.ceil(n / this.C));
-    this.colors = { skin: new THREE.Color(skin), flesh: new THREE.Color(flesh), deep: new THREE.Color(deep) };
+    this.colors = { skin: new THREE.Color(skin), flesh: new THREE.Color(flesh), deep: new THREE.Color(deep), blood: new THREE.Color(blood) };
     this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0 });
     this.object = new THREE.Group();
     this.meshes = new Map();
@@ -1635,13 +1764,15 @@ class DamageVolume {
   idx(i, j, k) { return (k * this.P[1] + j) * this.P[0] + i; }
   reset() {
     this.f.set(this.base);
+    this.blood.fill(0);
+    this.wounds.length = 0;
     for (let cz = 0; cz < this.CN[2]; cz++) for (let cy = 0; cy < this.CN[1]; cy++) for (let cx = 0; cx < this.CN[0]; cx++)
       this.buildChunk(cx, cy, cz);
   }
   sampleArr(a, x, y, z) {
     const h = this.h;
     let gx = (x - this.min.x) / h, gy = (y - this.min.y) / h, gz = (z - this.min.z) / h;
-    if (gx < 0 || gy < 0 || gz < 0 || gx >= this.N[0] || gy >= this.N[1] || gz >= this.N[2]) return h * 4;   // outside: air
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= this.N[0] || gy >= this.N[1] || gz >= this.N[2]) return a === this.f ? h * 4 : 0;   // outside: air / no blood
     const i = gx | 0, j = gy | 0, k = gz | 0, fx = gx - i, fy = gy - j, fz = gz - k;
     const P0 = this.P[0], P01 = P0 * this.P[1], o = (k * this.P[1] + j) * P0 + i;
     const c00 = a[o] + (a[o + 1] - a[o]) * fx, c10 = a[o + P0] + (a[o + P0 + 1] - a[o + P0]) * fx;
@@ -1688,6 +1819,8 @@ class DamageVolume {
       const depth = -this.sampleArr(this.base, x, y, z);
       const w1 = THREE.MathUtils.smoothstep(depth, 0.002, 0.009), w2 = THREE.MathUtils.smoothstep(depth, 0.03, 0.13);
       _dc.copy(this.colors.skin).lerp(this.colors.flesh, w1).lerp(this.colors.deep, w2);
+      const bl = this.sampleArr(this.blood, x, y, z);
+      if (bl > 0.02) _dc.lerp(this.colors.blood, Math.min(1, bl * 1.3));
       col.push(_dc.r, _dc.g, _dc.b);
     }
     const V = (i, j, k) => vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)];
@@ -1737,6 +1870,52 @@ class DamageVolume {
           this.dirty.add(`${cx},${cy},${cz}`);
   }
   carveSphere(p, r) { this.carveCapsule(p, p, r); }
+  paintBlood(c, r, amount) {
+    const h = this.h, mn = this.min;
+    const i0 = Math.max(0, Math.floor((c.x - r - mn.x) / h)), i1 = Math.min(this.N[0], Math.ceil((c.x + r - mn.x) / h));
+    const j0 = Math.max(0, Math.floor((c.y - r - mn.y) / h)), j1 = Math.min(this.N[1], Math.ceil((c.y + r - mn.y) / h));
+    const k0 = Math.max(0, Math.floor((c.z - r - mn.z) / h)), k1 = Math.min(this.N[2], Math.ceil((c.z + r - mn.z) / h));
+    for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const d = Math.hypot(mn.x + i * h - c.x, mn.y + j * h - c.y, mn.z + k * h - c.z);
+      if (d > r) continue;
+      const o = this.idx(i, j, k);
+      this.blood[o] = Math.min(1.2, this.blood[o] + amount * (1 - d / r));
+    }
+    for (let cz = Math.max(0, ((k0 - 1) / this.C) | 0); cz <= Math.min(this.CN[2] - 1, ((k1 + 1) / this.C) | 0); cz++)
+      for (let cy = Math.max(0, ((j0 - 1) / this.C) | 0); cy <= Math.min(this.CN[1] - 1, ((j1 + 1) / this.C) | 0); cy++)
+        for (let cx = Math.max(0, ((i0 - 1) / this.C) | 0); cx <= Math.min(this.CN[0] - 1, ((i1 + 1) / this.C) | 0); cx++)
+          this.dirty.add(`${cx},${cy},${cz}`);
+  }
+  gradient(p, out) {
+    const h = this.h;
+    out.set(this.sample(p.x + h, p.y, p.z) - this.sample(p.x - h, p.y, p.z),
+      this.sample(p.x, p.y + h, p.z) - this.sample(p.x, p.y - h, p.z),
+      this.sample(p.x, p.y, p.z + h) - this.sample(p.x, p.y, p.z - h));
+    return out.lengthSq() > 1e-12 ? out.normalize() : out.set(0, 1, 0);
+  }
+  // Blood leaving a wound runs down the outside under gravity until it reaches a spot facing the
+  // ground, painting a trail; drips fall from the end of the trail.
+  addWound(pLocal, rate, tau) {
+    this.object.updateWorldMatrix(true, false);
+    const down = new THREE.Vector3(0, -1, 0).transformDirection(_dmgInv.copy(this.object.matrixWorld).invert());
+    const p = pLocal.clone(), n = new THREE.Vector3(), t = new THREE.Vector3();
+    // step out of the hole onto the surrounding surface
+    for (let i = 0; i < 6 && this.sample(p.x, p.y, p.z) > -0.001; i++) {
+      this.gradient(p, n); p.addScaledVector(n, -Math.max(0.002, this.sample(p.x, p.y, p.z)));
+    }
+    for (let i = 0; i < 70; i++) {
+      this.gradient(p, n);
+      if (n.dot(down) > 0.6) break;                       // underside: drips fall clear from here
+      t.copy(down).addScaledVector(n, -n.dot(down));
+      if (t.lengthSq() < 1e-6) break;
+      p.addScaledVector(t.normalize(), 0.006);
+      p.addScaledVector(this.gradient(p, n), -this.sample(p.x, p.y, p.z));   // back onto the surface
+      this.paintBlood(p, 0.011 + Math.random() * 0.004, 0.8);
+    }
+    this.gradient(p, n);
+    this.wounds.push({ drip: p.clone().addScaledVector(n, 0.003), rate, tau, timer: 0.4 + Math.random() * 0.4 });
+    if (this.wounds.length > 40) this.wounds.shift();
+  }
   flush() {
     for (const key of this.dirty) { const [x, y, z] = key.split(',').map(Number); this.buildChunk(x, y, z); }
     this.dirty.clear();
@@ -1768,6 +1947,13 @@ class DamageVolume {
     }
     return tb;
   }
+  isFreshEntry(o, d, span) {   // did this shot go into unbroken skin (not down an existing hole)?
+    const step = this.h * 0.5;
+    for (let t = span[0]; t <= span[1]; t += step)
+      if (this.sampleArr(this.base, o.x + d.x * t, o.y + d.y * t, o.z + d.z * t) < 0)
+        return this.sample(o.x + d.x * (t + this.h), o.y + d.y * (t + this.h), o.z + d.z * (t + this.h)) < 0;
+    return false;
+  }
   hitTest(worldO, worldD, maxDist = Infinity) {
     const [o, d] = this.toLocalRay(worldO, worldD);
     const span = this.rayBox(o, d);
@@ -1777,7 +1963,7 @@ class DamageVolume {
       if (this.sample(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t) < 0) return t;
     return Infinity;
   }
-  shoot(worldO, worldD, penetration, { entryR = 0.016, channelR = 0.012, exitR = 0.03 } = {}) {
+  shoot(worldO, worldD, penetration, { entryR = 0.0065, channelR = 0.0055, exitR = 0.011 } = {}) {
     const [o, d] = this.toLocalRay(worldO, worldD);
     const span = this.rayBox(o, d);
     if (!span) return null;
@@ -1797,19 +1983,23 @@ class DamageVolume {
     const exited = stopT === null && exitT !== null;
     const end = exited ? P(exitT) : P(stopT ?? exitT ?? entryT);
     // entry: a small crater, then the channel
-    this.carveSphere(P(entryT + 0.004), entryR);
+    const freshEntry = this.isFreshEntry(o, d, span);
+    this.carveSphere(P(entryT + 0.003), entryR);
     this.carveCapsule(entry, end, channelR);
     if (exited) {
       // exit wound: tissue gets pushed out ahead of the round, so the far side blows out wider and ragged
-      this.carveCapsule(P(exitT - 0.035), P(exitT + 0.01), exitR * 0.75);
+      this.carveCapsule(P(exitT - 0.02), P(exitT + 0.005), exitR * 0.7);
       this.carveSphere(end, exitR);
       const u = new THREE.Vector3(d.y, -d.x, 0); if (u.lengthSq() < 1e-6) u.set(1, 0, 0); u.normalize();
       const w = new THREE.Vector3().crossVectors(d, u);
       for (let n = 0; n < 4; n++) {
         const a = Math.random() * Math.PI * 2, rr = exitR * (0.6 + Math.random() * 0.5);
-        this.carveSphere(end.clone().addScaledVector(u, Math.cos(a) * rr).addScaledVector(w, Math.sin(a) * rr).addScaledVector(d, -0.008), exitR * 0.45);
+        this.carveSphere(end.clone().addScaledVector(u, Math.cos(a) * rr).addScaledVector(w, Math.sin(a) * rr).addScaledVector(d, -0.004), exitR * 0.4);
       }
-    } else this.carveSphere(end, channelR * 1.6);    // round stops: small temporary cavity
+    } else this.carveSphere(end, channelR * 1.4);    // round stops: small cavity
+    // bleeding: the entry seeps, the exit bleeds harder and for longer
+    if (freshEntry) this.addWound(entry, 0.7, 25);
+    if (exited) this.addWound(end, 1.4, 45);
     this.flush();
 
     const M = this.object.matrixWorld;
@@ -1818,8 +2008,9 @@ class DamageVolume {
       exited, remaining: Math.max(0, remaining), channel: penetration - Math.max(0, remaining),
       dirWorld: worldD.clone(), volume: this,
     };
-    spawnDebris(info.entry, worldD.clone().negate(), 6);
-    if (exited) spawnDebris(info.exitPoint, worldD, 14);
+    spawnDebris(info.entry, worldD.clone().negate(), 2);
+    bloodSpray(info.entry, worldD.clone().negate(), 5, 1.2);         // light back-spatter
+    if (exited) { spawnDebris(info.exitPoint, worldD, 5); bloodSpray(info.exitPoint, worldD, 22, 4.5); }
     playAt(syn.thud, info.entry, { gain: 1.0, ref: 2, rate: 0.55 + Math.random() * 0.1 });
     this.onHit?.(info);
     return info;
@@ -1827,9 +2018,108 @@ class DamageVolume {
 }
 const _dc = new THREE.Color();
 
+// ---------- blood ----------
+// Drops are simple ballistic particles that raycast the physics world as they fall. Where one lands
+// on static geometry it leaves a splat that stays (an instanced ring buffer, 3000 deep). Bleeding
+// wounds on damage volumes drip on a timer that slows as the wound clots.
+const BLOOD_DROPS_MAX = 500, SPLATS_MAX = 3000;
+const bloodDrops = [];
+const dropMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 4),
+  new THREE.MeshStandardMaterial({ color: '#6a0b08', roughness: 0.2 }), BLOOD_DROPS_MAX);
+dropMesh.count = 0; dropMesh.frustumCulled = false;
+scene.add(dropMesh);
+const splatGeo = (() => {   // an irregular blob, so rotated copies don't look stamped
+  const pts = [], n = 18;
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2, r = 0.75 + Math.random() * 0.3 + (i % 5 === 0 ? 0.25 : 0); pts.push(new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r)); }
+  return new THREE.ShapeGeometry(new THREE.Shape(pts));
+})();
+const splatMesh = new THREE.InstancedMesh(splatGeo, new THREE.MeshStandardMaterial({
+  color: '#4a0705', roughness: 0.18, metalness: 0, transparent: true, opacity: 0.92, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }), SPLATS_MAX);
+splatMesh.count = 0; splatMesh.frustumCulled = false; splatMesh.receiveShadow = true;
+scene.add(splatMesh);
+let splatNext = 0, splatLayer = 0;
+const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bp = new THREE.Vector3(), _bz = new THREE.Vector3(0, 0, 1);
+function addSplat(p, n, size, vel) {
+  _bq.setFromUnitVectors(_bz, n);
+  // a drop landing at an angle smears into an ellipse along its travel
+  const vt = _v1.copy(vel).addScaledVector(n, -vel.dot(n));
+  const speed = vt.length();
+  const xAxis = _v2.set(1, 0, 0).applyQuaternion(_bq);
+  let spin = Math.random() * Math.PI * 2;
+  if (speed > 0.3) spin = Math.atan2(vt.dot(_bp.crossVectors(n, xAxis)), vt.dot(xAxis));
+  _bq.multiply(new THREE.Quaternion().setFromAxisAngle(_bz, spin));
+  const stretch = 1 + Math.min(2.5, speed * 0.35);
+  splatLayer = (splatLayer + 1) % 50;
+  _bp.copy(p).addScaledVector(n, 0.0008 + splatLayer * 0.00002);
+  _bm.compose(_bp, _bq, _bs.set(size * stretch, size, 1));
+  splatMesh.setMatrixAt(splatNext, _bm);
+  splatNext = (splatNext + 1) % SPLATS_MAX;
+  splatMesh.count = Math.max(splatMesh.count, splatNext === 0 ? SPLATS_MAX : splatNext);
+  splatMesh.instanceMatrix.needsUpdate = true;
+}
+function spawnDrop(p, v, size) {
+  if (bloodDrops.length >= BLOOD_DROPS_MAX) bloodDrops.shift();
+  bloodDrops.push({ p: p.clone(), v: v.clone(), s: size });
+}
+function bloodSpray(p, dir, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const v = dir.clone().multiplyScalar(speed * (0.4 + Math.random() * 0.8))
+      .add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(speed * 0.45));
+    spawnDrop(p, v, 0.0015 + Math.random() * 0.0025);
+  }
+}
+const _dropRes = new CANNON.RaycastResult(), _df = new CANNON.Vec3(), _dt = new CANNON.Vec3();
+function updateBlood(dt) {
+  // wounds drip
+  for (const vol of damageables) {
+    if (!vol.wounds.length) continue;
+    vol.object.updateWorldMatrix(true, false);
+    for (let i = vol.wounds.length - 1; i >= 0; i--) {
+      const w = vol.wounds[i];
+      w.rate *= Math.exp(-dt / w.tau);
+      if (w.rate < 0.04) { vol.wounds.splice(i, 1); continue; }
+      w.timer -= dt * w.rate;
+      if (w.timer <= 0) {
+        w.timer = 0.22 + Math.random() * 0.4;
+        spawnDrop(_v1.copy(w.drip).applyMatrix4(vol.object.matrixWorld), _v2.set(0, -0.15, 0), 0.0022 + Math.random() * 0.0012);
+      }
+    }
+  }
+  // drops fall and land
+  let n = 0;
+  for (let i = bloodDrops.length - 1; i >= 0; i--) {
+    const d = bloodDrops[i];
+    d.v.y -= GRAVITY * dt;
+    _df.set(d.p.x, d.p.y, d.p.z);
+    _dt.set(d.p.x + d.v.x * dt, d.p.y + d.v.y * dt, d.p.z + d.v.z * dt);
+    _dropRes.reset();
+    world.raycastClosest(_df, _dt, { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, _dropRes);
+    if (_dropRes.hasHit) {
+      if (_dropRes.body.mass === 0) {
+        const hp = _dropRes.hitPointWorld, hn = _dropRes.hitNormalWorld;
+        addSplat(_v3.set(hp.x, hp.y, hp.z), _v4.set(hn.x, hn.y, hn.z), d.s * (2.2 + Math.random() * 1.6), d.v);
+      }
+      bloodDrops.splice(i, 1);
+      continue;
+    }
+    d.p.set(_dt.x, _dt.y, _dt.z);
+    if (d.p.y < -5) { bloodDrops.splice(i, 1); continue; }
+  }
+  for (const d of bloodDrops) {
+    const sp = d.v.length();
+    _bq.setFromUnitVectors(_v1.set(0, 1, 0), sp > 0.01 ? _v2.copy(d.v).divideScalar(sp) : _v2.set(0, 1, 0));
+    _bm.compose(d.p, _bq, _bs.set(d.s, d.s * (1 + Math.min(3, sp * 0.4)), d.s));
+    dropMesh.setMatrixAt(n++, _bm);
+  }
+  dropMesh.count = n;
+  dropMesh.instanceMatrix.needsUpdate = true;
+}
+const _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
+
 // little chunks that fly out of entry and exit wounds (visual only)
 const debris = [];
-const _debrisGeo = new THREE.BoxGeometry(0.008, 0.008, 0.008);
+const _debrisGeo = new THREE.BoxGeometry(0.004, 0.004, 0.004);
 const _debrisMat = new THREE.MeshStandardMaterial({ color: '#7a1f1a', roughness: 0.6 });
 function spawnDebris(p, dir, n) {
   for (let i = 0; i < n; i++) {
@@ -1882,8 +2172,8 @@ function fireBullet(origin, dir, o, depth = 0) {
   }
 }
 
-// Test target: a 0.7 m sphere (bigger than one round can get through) that slowly turns and bobs,
-// so damage has to stay put in the object's own space, the way it will on a moving NPC.
+// Test target: a 0.7 m sphere, bigger than one round can get through, so repeat shots have to dig.
+// Damage lives in the sphere's own space, so it stays put if the object moves (as an NPC will).
 const DMG_R = 0.35;
 const damageSphere = new DamageVolume({
   sdf: (x, y, z) => Math.hypot(x, y, z) - DMG_R,
@@ -1895,12 +2185,10 @@ scene.add(damageSphere.object);
 let dmgTime = 0;
 function updateDamageTargets(dt) {
   dmgTime += dt;
-  damageSphere.object.rotation.y += dt * 0.25;
-  damageSphere.object.position.y = 1.45 + Math.sin(dmgTime * 0.8) * 0.05;
 }
 
 // debug handle for console tinkering
-window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, actx, damageSphere, ammoPouch, fireBullet, THREE, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get drops() { return bloodDrops.length; }, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -1952,6 +2240,7 @@ function frame(dt, draw) {
   ammoPouch.update(dt);
   updateDamageTargets(dt);
   updateDebris(dt);
+  updateBlood(dt);
   for (const d of dynamics) { d.mesh.position.copy(d.body.position); d.mesh.quaternion.copy(d.body.quaternion); }
   if (draw) updateListener();
 
