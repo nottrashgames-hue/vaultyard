@@ -103,6 +103,7 @@
     <dl>
       <dt>Physics</dt><dd>Fully simulated body with muscle motors and balance. Shove it and it stumbles, stepping to catch itself; push hard enough and it falls, then gets back up after a moment. Grab a limb and drag it</dd>
       <dt>Damage</dt><dd>Skin, muscle, bone and organs in every part. A brain or heart hit is fatal (the heart takes a few seconds); heavy bleeding kills too; leg hits make it buckle</dd>
+      <dt>Blood</dt><dd>The tag over his head shows his blood volume. He goes paler as he loses it, presses a hand on his worst wound (which slows it), passes out below 60% and dies at 45%</dd>
       <dt>Organs</dt><dd>Open the belly wide enough (shotgun, or several hits close together) and the intestines spill out. You can grab them</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
       <dt>Desktop</dt><dd>F fire · E rack / pump · Q drop mag · X ammo from pouch · Z load ammo from other hand</dd>
@@ -116,7 +117,7 @@
       <dt>R</dt><dd>Respawn</dd>
     </dl>
     <span class="go">Click to play</span>
-    <p class="tag" style="margin:12px 0 0;font-size:11px">Hand models: WebXR Input Profiles generic-hand, MIT, © 2019 Amazon. M1911 model: Emi @ Violence, CC0. Gunshot recording: Vincent Sevedge, CC-BY 3.0. Reload recording: zer0_sol, CC0.</p>
+    <p class="tag" style="margin:12px 0 0;font-size:11px">Hand models: WebXR Input Profiles generic-hand, MIT, © 2019 Amazon. M1911 model: Emi @ Violence, CC0. Gunshot recording: Vincent Sevedge, CC-BY 3.0. Reload recording: zer0_sol, CC0. Gore: Fleshy Fight Sounds by Will Leamon (OGA-BY 3.0), extreme splatter (ljudbank, CC0), squish sounds by EZduzziteh (CC0).</p>
   </div>
   <div class="mini">Esc to release mouse · R respawn</div>
 </div>
@@ -1070,6 +1071,62 @@ async function loadSfx(name, url) {
 }
 loadSfx('shot', 'sfx/gunshot.wav');        // CZ-52 recording (Vincent Sevedge, CC-BY 3.0)
 loadSfx('handling', 'sfx/handling.wav');   // mag out / mag in / slide rack (zer0_sol, CC0)
+
+// ---- recorded gore ----
+// hits.wav: Will Leamon's "Fleshy Fight Sounds" (OGA-BY 3.0), trimmed into one bank; splatter*.flac:
+// "extreme splatter" sequences from the ljudbank collection (CC0), split into single splats on load;
+// squish*.mp3: EZduzziteh's squish sounds (CC0).
+const GORE_HITS = {
+  'gun-1a': [0.0, 0.4806], 'gun-1b': [0.5306, 0.4038], 'guns-arm-2a': [0.9844, 0.4966], 'guns-arm-2b': [1.531, 0.4038],
+  'hammer-1a': [1.9848, 0.3334], 'hammer-1b': [2.3682, 0.3327], 'hammer-arm-2a': [2.7509, 0.3667], 'hammer-arm-2b': [3.1676, 0.366],
+  'piercing-1a': [3.5836, 0.3767], 'piercing-1b': [4.0102, 0.3767], 'piercing-arm-2a': [4.4369, 0.3767], 'piercing-arm-2b': [4.8636, 0.367],
+  'punch_1a': [5.2806, 0.5108], 'punch_1b': [5.8414, 0.4088], 'punch_alt-2a': [6.3002, 0.5186], 'punch_alt-2b': [6.8688, 0.52],
+  'sword-1a': [7.4388, 0.4166], 'sword-1b': [7.9054, 0.4401], 'sword-arm-2a': [8.3955, 0.4419], 'sword-arm-2b': [8.8874, 0.4449],
+};
+const GORE_KINDS = {
+  bullet: ['gun-1a', 'gun-1b', 'guns-arm-2a', 'guns-arm-2b', 'piercing-1a', 'piercing-arm-2a'],
+  bone: ['hammer-arm-2a', 'hammer-arm-2b', 'hammer-1b'],
+  body: ['punch_1a', 'punch_1b', 'punch_alt-2a', 'punch_alt-2b'],
+  tear: ['sword-arm-2a', 'sword-arm-2b', 'sword-1b', 'piercing-1b', 'piercing-arm-2b'],
+};
+const goreSplats = [], GORE_SQUISH = ['squish1', 'squish2', 'squish3', 'squish4', 'squish5', 'squish6', 'squishsplat'];
+loadSfx('goreHits', 'sfx/gore/hits.wav');
+for (const n of [...GORE_SQUISH, 'squishpop']) loadSfx(n, `sfx/gore/${n}.mp3`);
+for (const i of [1, 2]) loadSfx('splatter' + i, `sfx/gore/splatter${i}.flac`).then(() => splitSplats(sfx['splatter' + i]));
+function splitSplats(buf) {   // cut a recorded sequence into its separate splats by loudness
+  if (!buf) return;
+  const d = buf.getChannelData(0), win = Math.round(buf.sampleRate * 0.01), env = [];
+  for (let i = 0; i < d.length; i += win) { let m = 0; for (let k = i; k < Math.min(d.length, i + win); k++) m = Math.max(m, Math.abs(d[k])); env.push(m); }
+  const peak = Math.max(...env) || 1;
+  let quiet = 99;
+  for (let w = 0; w < env.length; w++) {
+    if (env[w] > peak * 0.22 && quiet >= 4) {
+      let e = w + 4, q = 0;
+      while (e < env.length && e - w < 60) { if (env[e] < peak * 0.05) { if (++q >= 6) break; } else q = 0; e++; }
+      const off = Math.max(0, w - 1) * win / buf.sampleRate, dur = (e - w + 2) * win / buf.sampleRate;
+      if (dur > 0.06) goreSplats.push({ buf, off, dur });
+      quiet = 0; w = e;
+    }
+    quiet = env[w] < peak * 0.05 ? quiet + 1 : 0;
+  }
+}
+const pick = (a) => a[(Math.random() * a.length) | 0];
+function goreSound(kind, pos, gain = 1, o = {}) {
+  const rate = (o.rate ?? 1) * (0.9 + Math.random() * 0.2), ref = o.ref ?? 1.5;
+  if (kind === 'splat') {
+    if (goreSplats.length) { const s = pick(goreSplats); playAt(s.buf, pos, { offset: s.off, duration: s.dur, gain: gain * 0.9, ref, rate }); }
+    else playAt(syn2.splat, pos, { gain, ref, rate });
+    return;
+  }
+  if (kind === 'squish' || kind === 'pop') {
+    const b = sfx[kind === 'pop' ? 'squishpop' : pick(GORE_SQUISH)];
+    if (b) playAt(b, pos, { gain, ref, rate }); else playAt(syn2.squelch, pos, { gain, ref, rate });
+    return;
+  }
+  if (!sfx.goreHits) { playAt(syn.thud, pos, { gain, ref, rate: rate * 0.6 }); return; }
+  const [off, dur] = GORE_HITS[pick(GORE_KINDS[kind])];
+  playAt(sfx.goreHits, pos, { offset: off, duration: dur, gain, ref, rate, reverb: o.reverb });
+}
 const HANDLING = { magOut: [0.07, 0.42], magIn: [0.57, 0.42], slideBack: [1.0, 0.16], slideFwd: [1.16, 0.4] };
 
 function synth(seconds, fn) {
@@ -1914,7 +1971,8 @@ class Shotgun {
         group.forEach(o => used.add(o));
         const cen = group.reduce((a, o) => a.add(o.entry), new THREE.Vector3()).divideScalar(group.length);
         bloodSpray(cen, dir.clone().negate(), 6 + group.length * 3, 2.2);
-        playAt(syn2.squelch, cen, { gain: 0.6 + group.length * 0.08, ref: 2, rate: 0.8 + Math.random() * 0.3 });
+        goreSound(group.length >= 2 ? 'tear' : 'bullet', cen, 0.8 + group.length * 0.06, { ref: 2, reverb: 0.15 });
+        goreSound('splat', cen, 0.6 + group.length * 0.05, { ref: 1.6 });
         if (group.length < 2) continue;
         const pieces = vol.tearOut(group.map(o => o.entryLocal), group[0].dirLocal, group.length);
         const n = vol.baseNormal(group[0].entryLocal, new THREE.Vector3()).transformDirection(vol.object.matrixWorld);
@@ -2166,9 +2224,9 @@ function meshGrid(vals, nx, ny, nz, mn, h, shade) {
 }
 
 class DamageVolume {
-  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null, skin = null, cloth = false, organs = null, chunk = 16, paint = null }) {
+  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null, skin = null, cloth = false, organs = null, chunk = 16, paint = null, material = null }) {
     this.sdf = sdf; this.boneSdf = boneSdf; this.h = voxel; this.onHit = onHit;
-    this.skin = skin || FLESH.skin; this.cloth = cloth; this.organs = organs; this.paint = paint;
+    this.skin = skin || FLESH.skin; this.cloth = cloth; this.organs = organs; this.paint = paint; this.material = material;
     this.min = new THREE.Vector3(...min);
     const size = new THREE.Vector3(...max).sub(this.min);
     this.N = [Math.ceil(size.x / voxel), Math.ceil(size.y / voxel), Math.ceil(size.z / voxel)];
@@ -2232,16 +2290,17 @@ class DamageVolume {
   // bruises and abrasion collars on intact skin, then any blood painted over it.
   shade(x, y, z, c) {
     const depth = -this.sampleArr(this.base, x, y, z);
+    this._skin = 0;
     let wet = 0;
     const bone = this.boneSdf && depth > SKIN_T * 0.55 ? this.boneSdf(x, y, z) : 1;
     if (bone < 0.0015) {
       c.copy(FLESH.bone).lerp(FLESH.marrow, SS(-bone, 0.008, 0.02) * 0.7);
       wet = 0.35;
     } else if (depth <= SKIN_T * 0.55) {
-      c.copy(this.skin);
+      c.copy(this.skin); this._skin = this.cloth ? 0 : 1;
       const mottle = hash3(x * 3, y * 3, z * 3) * 0.06;
       c.offsetHSL(0, 0, mottle - 0.03);
-      this.paint?.(x, y, z, c);
+      if (this.paint?.(x, y, z, c)) this._skin = 0;   // hair, eyes: not skin
       if (!this.cloth) for (const b of (this.shadeBruises || this.bruises)) {
         const d = Math.hypot(x - b.c.x, y - b.c.y, z - b.c.z);
         if (b.collar && d < b.collar * 2.4) c.lerp(FLESH.collar, 0.85 * (1 - SS(d, b.collar * 1.2, b.collar * 2.4)));
@@ -2280,7 +2339,7 @@ class DamageVolume {
     const ci0 = Math.max(0, i0 - 1), cj0 = Math.max(0, j0 - 1), ck0 = Math.max(0, k0 - 1);
     const W = i1 - ci0, Hh = j1 - cj0, D = k1 - ck0;
     const vid = new Int32Array(W * Hh * D).fill(-1);
-    const pos = [], nor = [], col = [], wet = [], ind = [];
+    const pos = [], nor = [], col = [], wet = [], ind = [], skinA = [];
     const v = new Float32Array(8);
     const P0 = this.P[0], P01 = P0 * this.P[1];
     const corner = [0, 1, P0, P0 + 1, P01, P01 + 1, P01 + P0, P01 + P0 + 1];
@@ -2309,7 +2368,7 @@ class DamageVolume {
       vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)] = pos.length / 3;
       pos.push(x, y, z);
       this.gradient(q.set(x, y, z), n); nor.push(n.x, n.y, n.z);
-      wet.push(this.shade(x, y, z, _dc)); col.push(_dc.r, _dc.g, _dc.b);
+      wet.push(this.shade(x, y, z, _dc)); col.push(_dc.r, _dc.g, _dc.b); skinA.push(this._skin);
     }
     this.shadeBruises = null;
     const V = (i, j, k) => vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)];
@@ -2328,10 +2387,11 @@ class DamageVolume {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     g.setAttribute('wet', new THREE.Float32BufferAttribute(wet, 1));
+    g.setAttribute('skin', new THREE.Float32BufferAttribute(skinA, 1));
     g.setIndex(pos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(ind, 1) : new THREE.Uint16BufferAttribute(ind, 1));
     g.computeBoundingSphere();
     if (mesh) { mesh.geometry.dispose(); mesh.geometry = g; }
-    else { mesh = new THREE.Mesh(g, fleshMat); mesh.castShadow = mesh.receiveShadow = true; this.object.add(mesh); this.meshes.set(key, mesh); }
+    else { mesh = new THREE.Mesh(g, this.material || fleshMat); mesh.castShadow = mesh.receiveShadow = true; this.object.add(mesh); this.meshes.set(key, mesh); }
   }
   markDirty(lo, hi) {   // lo/hi: local-space AABB
     const h = this.h, C = this.C;
@@ -2411,7 +2471,7 @@ class DamageVolume {
       const e = this.emitters[i];
       e.rate *= Math.exp(-dt / e.tau);
       if (e.rate < 0.05) { this.emitters.splice(i, 1); continue; }
-      e.timer -= dt * e.rate;
+      e.timer -= dt * e.rate * (e.press ? 0.25 : 1);
       if (e.timer <= 0) {
         e.timer = 0.12 + Math.random() * 0.25;
         if (this.flows.length < 60) this.flows.push({ p: e.p.clone().add(_v3.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.006)), vol: 0.45 + Math.random() * 0.5 });
@@ -2562,8 +2622,9 @@ class DamageVolume {
     if (!o.quiet) {
       bloodSpray(info.entry, worldD.clone().negate(), 6, 1.4);
       if (exited) bloodSpray(info.exitPoint, worldD, 26, 4.5);
-      playAt(syn.thud, info.entry, { gain: 1.0, ref: 2, rate: 0.55 + Math.random() * 0.1 });
-      if (hitBone) playAt(syn.dry, info.entry, { gain: 0.6, rate: 0.6, ref: 1.5 });
+      goreSound('bullet', info.entry, 1.1, { ref: 2, reverb: 0.15 });
+      if (hitBone) goreSound('bone', info.entry, 0.7, { ref: 1.5 });
+      if (exited) goreSound('splat', info.exitPoint, 0.6, { ref: 1.2 });
     }
     this.onHit?.(info);
     return info;
@@ -2676,7 +2737,7 @@ function spawnChunk(vol, c, vel) {
     const iv = Math.abs(e.contact.getImpactVelocityAlongNormal());
     if (iv > 0.7 && thuds < 4) {
       thuds++;
-      playAt(syn2.splat, body.position, { gain: Math.min(0.9, iv * 0.25), rate: 0.8 + Math.random() * 0.4, ref: 1 });
+      goreSound(thuds === 1 ? 'splat' : 'squish', body.position, Math.min(1, iv * 0.3), { ref: 1 });
       bloodSpray(_v3.set(body.position.x, body.position.y, body.position.z), _v4.set(0, 1, 0), 4, Math.min(2, iv * 0.5));
     }
   });
@@ -2937,7 +2998,9 @@ const matNPC = new CANNON.Material('npc');
 world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matWorld, { friction: 0.9, restitution: 0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matHand, { friction: 0.8, restitution: 0, contactEquationStiffness: 20000, contactEquationRelaxation: 6 }));
 const NPC_MASK = G.STATIC | G.DYN | G.HAND | G.GUN;   // the player's body meets it through leanOn(), not solid contact
-const NPC_BLOOD = 320;          // blood loss (integrated wound bleeding) that kills
+// Blood: wound bleeding is integrated into units lost; NPC_BLOOD_TOTAL is the whole blood volume.
+// Pale from ~10% lost, weak and slumping, unconscious at 40% (haemorrhagic shock), dead at 55%.
+const NPC_BLOOD_TOTAL = 600, NPC_FAINT = 0.4, NPC_BLOOD = NPC_BLOOD_TOTAL * 0.55;
 
 const _Y = new THREE.Vector3(0, 1, 0);
 
@@ -2972,18 +3035,35 @@ const ORGAN = {
 };
 const organ = (kind, sdf, fatal = false) => ({ name: kind, sdf, fatal, ...ORGAN[kind] });
 const SHIRT = new THREE.Color('#5d6468'), PANTS = new THREE.Color('#343b46');
+const npcSkinMat = (() => {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0 });
+  m.userData.pale = { value: 0 };
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uPale = m.userData.pale;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float wet;\nattribute float skin;\nvarying float vWet;\nvarying float vSkin;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWet = wet; vSkin = skin;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vWet;\nvarying float vSkin;\nuniform float uPale;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float pale = uPale * vSkin;
+        float lum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+        vec3 drained = mix(vec3(lum), vec3(0.80, 0.82, 0.84), 0.55) * 1.08;   // waxy grey-white, a little blue
+        diffuseColor.rgb = mix(diffuseColor.rgb, drained, pale);`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.14, vWet);');
+  };
+  return m;
+})();
 const FACE = { eye: new THREE.Color('#d8d0c4'), iris: new THREE.Color('#2a2420'), lid: new THREE.Color('#8a6656'),
   lip: new THREE.Color('#a4655a'), brow: new THREE.Color('#3a2d25'), hair: new THREE.Color('#2f2621') };
 function paintFace(x, y, z, c) {   // skin-layer colour on the head: eyes, brows, lips, cropped hair
   for (const e of [1, -1]) {
     const d = Math.hypot(x - e * 0.032, y - 0.02, z - 0.081);
-    if (d < 0.0135) { c.copy(Math.hypot(x - e * 0.032, y - 0.02) < 0.0055 && z > 0.088 ? FACE.iris : FACE.eye); return; }
+    if (d < 0.0135) { c.copy(Math.hypot(x - e * 0.032, y - 0.02) < 0.0055 && z > 0.088 ? FACE.iris : FACE.eye); return true; }
     if (Math.hypot(x - e * 0.032, y - 0.02) < 0.02 && z > 0.07) c.lerp(FACE.lid, 0.35);
-    if (y > 0.036 && y < 0.047 && Math.abs(x - e * 0.034) < 0.019 && z > 0.07) { c.lerp(FACE.brow, 0.8); return; }
+    if (y > 0.036 && y < 0.047 && Math.abs(x - e * 0.034) < 0.019 && z > 0.07) { c.lerp(FACE.brow, 0.8); return true; }
   }
   if (Math.abs(x) < 0.021 && Math.abs(y + 0.047 + x * x * 3) < 0.005 && z > 0.06) { c.lerp(FACE.lip, 0.7); return; }
   const hairline = z > 0.04 ? 0.075 - (z - 0.04) * 0.3 : 0.0 + Math.max(0, z + 0.02) * 0.8;
-  if (y > hairline && !(Math.abs(x) > 0.075 && y < 0.03)) c.lerp(FACE.hair, 0.88);
+  if (y > hairline && !(Math.abs(x) > 0.075 && y < 0.03)) { c.lerp(FACE.hair, 0.88); return true; }
 }
 
 // Part layout in the NPC's own frame: facing +Z, +X is its left, feet on y = 0.
@@ -3145,7 +3225,7 @@ class RagdollNPC {
     const part = { def, body, name: def.name, side: def.side, vol: null, mesh: null };
     {
       const vol = new DamageVolume({ sdf: def.sdf, boneSdf: def.bone, min: def.min, max: def.max, voxel: def.voxel,
-        skin: def.skin, cloth: def.cloth, organs: def.organs, paint: def.paint, chunk: def.voxel < 0.009 ? 16 : 24 });
+        skin: def.skin, cloth: def.cloth, organs: def.organs, paint: def.paint, material: npcSkinMat, chunk: def.voxel < 0.009 ? 16 : 24 });
       vol.body = body; vol.npc = this; vol.part = def.name;
       vol.onHit = (info) => this.onHit(part, info);
       vol.onTear = (mid) => this.onTear(part, mid);
@@ -3180,20 +3260,23 @@ class RagdollNPC {
     for (const h of [hands.left, hands.right]) if (h.held?.d?.npc === this || h.held?.d?.gut) h.release();
     for (const g of this.guts) g.dispose();
     this.guts.length = 0;
+    npcSkinMat.userData.pale.value = 0;
     for (const p of this.list) {
       const b = p.body, pos = this.restPos(p.def, _v3);
       b.position.set(pos.x, pos.y, pos.z); b.quaternion.set(this.q0.x, this.q0.y, this.q0.z, this.q0.w);
       b.velocity.setZero(); b.angularVelocity.setZero();
       b.collisionFilterMask = NPC_MASK;
     }
-    this.alive = true; this.cause = null; this.dieAt = 0; this.bloodLost = 0;
+    this.alive = true; this.cause = null; this.dieAt = 0; this.bloodLost = 0; this.conscious = true;
+    this.wounds = []; this.press = null; this.pressT = 0;
     this.tone = 1; this.flinch = 0; this.fallen = false; this.airTime = 0; this.legWeak = { L: 1, R: 1 };
     this.spill = null; this.hits = 0;
     this.step = null; this.stepCool = 0; this.steps = 0; this.outFor = 0; this.lean = { x: 0, z: 0 };
     this.rising = false; this.riseT = 0; this.downTime = 0; this.rises = 0; this.crouch = 0;
     this.sync();
   }
-  get state() { return this.alive ? (this.fallen ? (this.rising ? 'getting up' : 'down') : this.step ? 'stepping' : 'standing') : `dead (${this.cause})`; }
+  get state() { return !this.alive ? `dead (${this.cause})` : !this.conscious ? 'unconscious' : this.fallen ? (this.rising ? 'getting up' : 'down') : this.step ? 'stepping' : 'standing'; }
+  get bloodPct() { return Math.max(0, 100 * (1 - this.bloodLost / NPC_BLOOD_TOTAL)); }
   grounded(shin) {   // is this leg's shoe on something?
     const p = shin.body.pointToWorldFrame(shin.body.shapeOffsets[1], _gp);
     this.footRay.reset();
@@ -3233,7 +3316,7 @@ class RagdollNPC {
   drive(h) {
     const pel = this.parts.pelvis.body;
     if (this.alive || this.fallen) this.leanOn(h);
-    const stand = this.alive && !this.fallen && this.tone > 0.15;
+    const stand = this.alive && this.conscious && !this.fallen && this.tone > 0.15;
     this.planted = { L: stand && this.grounded(this.parts.shinL), R: stand && this.grounded(this.parts.shinR) };
     if (stand) this.balanceStep(h); else this.step = null;
     if (this.step) this.planted[this.step.S] = false;
@@ -3245,6 +3328,7 @@ class RagdollNPC {
     for (const d of this.drives) {
       let torque = d.torque * this.tone * (d.leg ? this.legWeak[d.leg] : 1);
       d.target.copy(d.pose);
+      if (this.press && this.press.arm && (d.name === 'upperArm' + this.press.arm || d.name === 'forearm' + this.press.arm)) torque *= 0.15;
       if (d.leg && sw && d.leg === sw.S) {   // swing leg: soft, knee and hip bend to clear the ground
         torque *= this.tune.swingSoft;
         d.pose2 = (d.name.startsWith('shin') ? 1.0 : -0.55) * swS;
@@ -3274,6 +3358,65 @@ class RagdollNPC {
       uprightPD(pel, this.parts['shin' + S].body, yawQ, tu.kpP * k, tu.kdP * k, tu.cap * k);
     }
     if (this.rising) this.riseForces(h);
+    if (this.press) this.pressForce(h);
+  }
+  // ---- clutching a wound ----
+  // Pick the worst wound it can reach and press a hand on it: a force on the hand, reacting on the chest
+  // (the arm muscles doing it). A hand held on a wound cuts that wound's bleeding to about a quarter.
+  woundBleed(w) {
+    let r = 0;
+    for (const e of w.vol.emitters) if (e.p.distanceToSquared(w.p) < 0.06 * 0.06) r += e.rate;
+    return r;
+  }
+  choosePress(dt) {
+    this.pressT -= dt;
+    for (const p of this.list) for (const e of p.vol.emitters) e.press = false;
+    if (!this.alive || !this.conscious || this.rising) { this.press = null; return; }
+    if (this.pressT <= 0) {
+      this.pressT = 1.5;
+      let best = null, bestR = 0.15;
+      for (const w of this.wounds) {
+        if (w.noReach) continue;
+        const r = this.woundBleed(w);
+        if (r <= bestR) continue;
+        const arm = w.side ? (w.side === 'L' ? 'R' : 'L') : null;
+        if (w.part === 'head' || /shin/.test(w.part)) continue;                  // can't hold those well standing
+        w.vol.baseNormal(w.p, _ns1);
+        if (/chest|abdomen|pelvis/.test(w.part) && _ns1.z < -0.4) continue;   // back wounds are out of reach
+        best = w; bestR = r; best.useArm = arm;
+      }
+      if (!best) { this.press = null; return; }
+      if (!best.useArm) {   // torso or leg: the arm whose shoulder is a comfortable reach away (~40 cm)
+        const wp = _ns2.copy(best.p).applyMatrix4(best.vol.object.matrixWorld), ch = this.parts.chest.body;
+        const reach = (x) => { ch.pointToWorldFrame(_gp.set(x, 0.1, 0), _gp); return Math.abs(Math.hypot(wp.x - _gp.x, wp.y - _gp.y, wp.z - _gp.z) - 0.42); };
+        best.useArm = reach(0.215) < reach(-0.215) ? 'L' : 'R';
+      }
+      if (this.press?.w !== best) this.press = { w: best, arm: best.useArm, on: false };
+    }
+    if (this.press) {
+      const w = this.press.w;
+      if (this.press.on) for (const e of w.vol.emitters) if (e.p.distanceToSquared(w.p) < 0.06 * 0.06) e.press = true;
+      if (this.woundBleed(w) < 0.1) this.pressT = 0;
+    }
+  }
+  pressForce(h) {
+    const pr = this.press, w = pr.w, fa = this.parts['forearm' + pr.arm].body, chest = this.parts.chest.body;
+    w.vol.baseNormal(w.p, _ns1);
+    const t = _ns2.copy(w.p).addScaledVector(_ns1, 0.03).applyMatrix4(w.vol.object.matrixWorld);   // the palm sits on the skin
+    fa.pointToWorldFrame(_handPt, _gp);
+    fa.getVelocityAtWorldPoint(_gp, _ngv);
+    const s = Math.max(0.65, this.tone);   // even a weak man can hold a hand to a wound
+    const k = 900 * s, c = 55 * s;
+    _nsF.set((t.x - _gp.x) * k - _ngv.x * c, (t.y - _gp.y) * k - _ngv.y * c + 3.8 * GRAVITY, (t.z - _gp.z) * k - _ngv.z * c);
+    const l = _nsF.length(), cap = 190 * s; if (l > cap) _nsF.scale(cap / l, _nsF);
+    fa.applyForce(_nsF, _ngr.set(_gp.x - fa.position.x, _gp.y - fa.position.y, _gp.z - fa.position.z));
+    chest.applyForce(_nsF.negate(_nsF), _ngr.set(0, 0, 0));
+    pr.on = Math.hypot(t.x - _gp.x, t.y - _gp.y, t.z - _gp.z) < 0.13;
+    pr.t = (pr.t || 0) + h;
+    if (!pr.on && pr.t > 2.5) {   // can't get a hand there (or anywhere close on that part): pick another
+      for (const o of this.wounds) if (o.part === w.part && o.p.distanceTo(w.p) < 0.15) o.noReach = true;
+      this.pressT = 0;
+    }
   }
   // ---- catching itself ----
   // Capture point: where the centre of mass would come to rest over a planted foot, given how fast it is
@@ -3406,17 +3549,22 @@ class RagdollNPC {
     }
   }
   update(dt) {
+    this.choosePress(dt);
     let rate = 0;
-    for (const p of this.list) if (p.vol) for (const e of p.vol.emitters) rate += e.rate;
+    for (const p of this.list) if (p.vol) for (const e of p.vol.emitters) rate += e.rate * (e.press ? 0.25 : 1);
     this.bloodLost += rate * dt;
+    if (this.alive && this.conscious && this.bloodLost > NPC_BLOOD_TOTAL * NPC_FAINT) { this.conscious = false; this.press = null; this.rising = false; }
+    const lostFrac = this.bloodLost / NPC_BLOOD_TOTAL;
+    npcSkinMat.userData.pale.value = THREE.MathUtils.smoothstep(lostFrac, 0.08, 0.5) * 0.9;
+    this.updateReadout();
     const pel = this.parts.pelvis.body;
     const up = _v4.set(0, 1, 0).applyQuaternion(cq(pel, _nq)).y;
     const anyFoot = this.grounded(this.parts.shinL) || this.grounded(this.parts.shinR);
     this.airTime = anyFoot ? 0 : this.airTime + dt;
-    if (!this.fallen && (up < 0.6 || this.airTime > 0.5 || pel.position.y < 0.55)) { this.fallen = true; this.step = null; }
+    if (!this.fallen && (up < 0.6 || this.airTime > 0.5 || pel.position.y < 0.55)) { this.fallen = true; this.step = null; this.fallThud = true; }
     else if (this.fallen && up > 0.9 && anyFoot && pel.position.y > 0.85 && Math.hypot(pel.velocity.x, pel.velocity.z) < 0.35) { this.fallen = false; this.rising = false; this.downTime = 0; }
     // down but still able: wait for the tumble to stop, then try to get up (and try again if it fails)
-    const able = this.alive && !this.dieAt && this.bloodLost < NPC_BLOOD * 0.8 && Math.min(this.legWeak.L, this.legWeak.R) > 0.3;
+    const able = this.alive && this.conscious && !this.dieAt && this.bloodLost < NPC_BLOOD * 0.8 && Math.min(this.legWeak.L, this.legWeak.R) > 0.3;
     if (this.fallen && able) {
       if (!this.rising) {
         this.downTime += dt;
@@ -3437,11 +3585,11 @@ class RagdollNPC {
     else {
       const vit = Math.max(0.25, 1 - this.bloodLost / (NPC_BLOOD * 1.4));
       const heart = this.dieAt ? Math.max(0.2, (this.dieAt - simTime) / 3) : 1;   // heart shot: fading out
-      target = vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen && !this.rising ? 0.35 : 1);
+      target = !this.conscious ? 0.03 : vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen && !this.rising ? 0.35 : 1);
     }
     this.tone += (target - this.tone) * Math.min(1, dt * (this.alive ? 6 : this.cause === 'brain' ? 40 : 4));
     // look at the player while alive
-    if (this.alive && !this.fallen) {
+    if (this.alive && this.conscious && !this.fallen) {
       const chest = this.parts.chest.body, head = this.drives.find(d => d.name === 'head');
       const cy = this.heading(chest, _nq3);
       const fwd = _v4.set(0, 0, 1).applyQuaternion(cy);
@@ -3450,16 +3598,48 @@ class RagdollNPC {
       if (to.lengthSq() < 64) dyaw = Math.max(-1.1, Math.min(1.1, Math.atan2(fwd.x * to.z - fwd.z * to.x, fwd.x * to.x + fwd.z * to.z) * -1));
       head.pose.setFromAxisAngle(_Y, dyaw);
     }
+    if (this.fallThud && pel.position.y < 0.32) { this.fallThud = false; goreSound('body', pel.position, 0.9, { ref: 2, rate: 0.8 }); }
     if (this.spill) this.checkSpill();
     for (const g of this.guts) g.update(dt);
+  }
+  // floating readout over the head: blood volume and state
+  updateReadout() {
+    if (!this.label) {
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 72;
+      this.labelCtx = cv.getContext('2d');
+      this.labelTex = new THREE.CanvasTexture(cv); this.labelTex.colorSpace = THREE.SRGBColorSpace;
+      this.label = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.labelTex, transparent: true, depthWrite: false }));
+      this.label.scale.set(0.34, 0.096, 1);
+      scene.add(this.label);
+      this.labelKey = '';
+    }
+    const hp = this.parts.head.body.position;
+    this.label.position.set(hp.x, hp.y + 0.32, hp.z);
+    const pct = Math.round(this.bloodPct), st = !this.alive ? 'DEAD' : !this.conscious ? 'UNCONSCIOUS' : this.press?.on ? 'HOLDING WOUND' : this.dieAt ? 'DYING' : '';
+    const key = pct + st;
+    if (key === this.labelKey) return;
+    this.labelKey = key;
+    const g = this.labelCtx;
+    g.clearRect(0, 0, 256, 72);
+    g.fillStyle = 'rgba(10,14,16,0.72)'; g.beginPath(); g.roundRect(2, 2, 252, 68, 10); g.fill();
+    g.fillStyle = '#3a1210'; g.fillRect(14, 40, 228, 14);
+    g.fillStyle = pct > 70 ? '#c0281f' : pct > 55 ? '#a8331a' : '#7d1d14'; g.fillRect(14, 40, 228 * pct / 100, 14);
+    g.fillStyle = '#ffb547'; g.fillRect(14 + 228 * (1 - NPC_FAINT), 36, 2, 22);   // faint line
+    g.font = '700 22px "Chakra Petch", sans-serif'; g.fillStyle = '#e8f2ef'; g.textBaseline = 'top';
+    g.fillText(`BLOOD ${pct}%`, 14, 9);
+    g.font = '600 15px "IBM Plex Sans", sans-serif'; g.fillStyle = '#ffb547'; g.textAlign = 'right';
+    g.fillText(st, 242, 13); g.textAlign = 'left';
+    this.labelTex.needsUpdate = true;
   }
   kill(cause) {
     if (!this.alive) return;
     this.alive = false; this.cause = cause; this.dieAt = 0;
-    playAt(syn2.squelch, this.parts.chest.body.position, { gain: 0.5, rate: 0.6, ref: 2 });
+    this.fallThud = true;   // a body thump when it hits the floor
   }
   onHit(part, info) {
     this.hits++;
+    this.addWoundSpot(part, info.entryLocal);
+    if (info.exitPoint) this.addWoundSpot(part, info.exitPoint.clone().applyMatrix4(_dmgInv.copy(part.vol.object.matrixWorld).invert()));
     if (part.name === 'abdomen') this.spill = { near: info.entryLocal.clone(), far: info.exitPoint ? info.exitPoint.clone().applyMatrix4(_dmgInv.copy(part.vol.object.matrixWorld).invert()) : null };
     if (!this.alive) return;
     if (info.organs.includes('brain')) { this.kill('brain'); return; }
@@ -3470,7 +3650,13 @@ class RagdollNPC {
     this.flinch = Math.min(1, this.flinch + (info.channel > 0.05 ? 0.5 : 0.25));
     if (part.side && /thigh|shin/.test(part.name)) this.legWeak[part.side] *= 0.6;
   }
+  addWoundSpot(part, p) {
+    this.wounds.push({ part: part.name, side: /upperArm|forearm/.test(part.name) ? part.side : null, vol: part.vol, p: p.clone() });
+    if (this.wounds.length > 24) this.wounds.shift();
+    this.pressT = Math.min(this.pressT, 0.4);   // react to a fresh wound quickly
+  }
   onTear(part, mid) {
+    this.addWoundSpot(part, mid);
     if (part.name === 'abdomen') this.spill = { near: mid.clone(), far: null };
     if (this.alive && part.name === 'head') this.kill('brain');
   }
@@ -3500,7 +3686,7 @@ class RagdollNPC {
   }
 }
 const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3(), _ngv = new CANNON.Vec3(), _ngr = new CANNON.Vec3(), _nsF = new CANNON.Vec3();
-const _hipLean = new THREE.Quaternion(), _eul = new THREE.Euler(), _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
+const _handPt = new CANNON.Vec3(0, -0.215, 0), _hipLean = new THREE.Quaternion(), _eul = new THREE.Euler(), _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
 const shoeMat = new THREE.MeshStandardMaterial({ color: '#25272a', roughness: 0.75 });
 function RoundedShoe([hx, hy, hz]) {   // a box with the toe rounded off
   const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2, 2, 1, 4), a = g.attributes.position;
@@ -3543,7 +3729,7 @@ class Guts {
     g.setIndex(ind); g.setDrawRange(0, 0);
     this.mesh = new THREE.Mesh(g, gutMat); this.mesh.frustumCulled = false; this.mesh.castShadow = true;
     scene.add(this.mesh);
-    playAt(syn2.squelch, this.body.position, { gain: 0.9, rate: 0.5, ref: 2 });
+    goreSound('squish', this.body.position, 1, { ref: 2, rate: 0.75 }); goreSound('splat', this.body.position, 0.7, { ref: 2 });
   }
   toWorld(local, out) { return out.copy(local).applyQuaternion(cq(this.body, _nq)).add(this.body.position); }
   root(node) {
@@ -3575,7 +3761,7 @@ class Guts {
       const r = this.roots[i], w = this.toWorld(this.inner, _v3), p = r.node.body.position;
       if (Math.hypot(p.x - w.x, p.y - w.y, p.z - w.z) > 0.12) {
         world.removeConstraint(r.c); this.roots.splice(i, 1);
-        playAt(syn2.squelch, w, { gain: 0.6, rate: 0.9, ref: 1.5 });
+        goreSound('pop', w, 0.9, { ref: 1.5 }); goreSound('squish', w, 0.6, { ref: 1.5 });
         bloodSpray(w.clone(), _v4.set(0, -1, 0), 8, 1);
       }
     }

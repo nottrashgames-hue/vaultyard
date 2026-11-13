@@ -31,3 +31,9 @@ An active ragdoll: 13 rigid bodies on cone-twist and hinge joints. Each joint ha
 Every part carries its own `DamageVolume` with skin or clothing, muscle, bone (skull, ribs, spine, long bones) and organs (brain, heart, lungs, liver, intestines). A round through the brain kills instantly; the heart gives it a few seconds; blood loss from its wounds weakens it and eventually kills it; leg hits make it buckle. Open the belly wide enough and a loop of intestine spills out, swings, drips and can be grabbed; yank it hard and it tears loose.
 
 Torn shotgun chunks are meshed at a coarser 12 mm grid, and crater rebuilds are spread over the next few frames.
+
+### Blood, shock and wounds
+A tag over the NPC's head shows its blood volume. Bleeding from every wound drains it; bare skin turns waxy grey-white as it drops, it weakens, passes out at 60% and dies at 45%. While conscious it presses a hand on its worst reachable wound, which cuts that wound's bleeding to a quarter.
+
+### Gore sounds
+Bullet, bone, tearing and body-fall hits are recordings from Will Leamon's Fleshy Fight Sounds (OGA-BY 3.0); splats are cut from CC0 splatter recordings at load time; chunks and guts use CC0 squishes. See CREDITS.md.
