@@ -98,6 +98,12 @@
       <dt>Load</dt><dd>Push a shell up into the port under the receiver (6 in the tube). The pouch gives shells while you hold it.</dd>
       <dt>Close range</dt><dd>Pellets that land together tear chunks out of the flesh</dd>
       <dt>Reset</dt><dd>Push either red RESET RANGE button (by the benches and at spawn)</dd>
+    </dl>
+    <h2>Ragdoll NPC (down the shotgun lane)</h2>
+    <dl>
+      <dt>Physics</dt><dd>Fully simulated body with muscle motors and ankle balance. Walk into it, shove it or grab a limb and drag it; push hard enough and it falls</dd>
+      <dt>Damage</dt><dd>Skin, muscle, bone and organs in every part. A brain or heart hit is fatal (the heart takes a few seconds); heavy bleeding kills too; leg hits make it buckle</dd>
+      <dt>Organs</dt><dd>Open the belly wide enough (shotgun, or several hits close together) and the intestines spill out. You can grab them</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
       <dt>Desktop</dt><dd>F fire · E rack / pump · Q drop mag · X ammo from pouch · Z load ammo from other hand</dd>
     </dl>
@@ -195,7 +201,7 @@ world.solver.iterations = 14;
 world.defaultContactMaterial.friction = 0.45;
 world.defaultContactMaterial.restitution = 0.05;
 
-const G = { PLAYER: 1, HAND: 2, STATIC: 4, DYN: 8, GUN: 16, DEBRIS: 32 };
+const G = { PLAYER: 1, HAND: 2, STATIC: 4, DYN: 8, GUN: 16, DEBRIS: 32, NPC: 64, GUTS: 128 };
 const ALL = 0xffff, NO_PLAYER = ALL & ~G.PLAYER;
 let pistol = null;   // created once the M1911 model loads
 const guns = [];     // every gun in the world (pistol, shotgun)
@@ -359,7 +365,7 @@ for (const [x, z] of [[-12, 8], [-14, -4], [14, 8], [16, -12], [-16, -16], [6, -
 // ---------- player body ----------
 const player = new CANNON.Body({
   mass: 70, material: matPlayer, fixedRotation: true, linearDamping: 0,
-  collisionFilterGroup: G.PLAYER, collisionFilterMask: G.STATIC | G.DYN,
+  collisionFilterGroup: G.PLAYER, collisionFilterMask: G.STATIC | G.DYN | G.NPC,
 });
 player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, PR, 0));
 player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, 0.9, 0));
@@ -497,7 +503,7 @@ class PhysHand {
     this.side = side;
     this.body = new CANNON.Body({
       mass: 1.5, material: matHand, linearDamping: 0, angularDamping: 0,
-      collisionFilterGroup: G.HAND, collisionFilterMask: G.STATIC | G.DYN | G.GUN,
+      collisionFilterGroup: G.HAND, collisionFilterMask: G.STATIC | G.DYN | G.GUN | G.NPC | G.GUTS,
     });
     this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.02, 0.088, 0.048)), new CANNON.Vec3(0, -0.012, 0));
     world.addBody(this.body);
@@ -568,7 +574,7 @@ class PhysHand {
   setActive(on) {
     if (on === this.active) return;
     this.active = on;
-    this.body.collisionFilterMask = on ? (G.STATIC | G.DYN | G.GUN) : 0;
+    this.body.collisionFilterMask = on ? (G.STATIC | G.DYN | G.GUN | G.NPC | G.GUTS) : 0;
     this.mesh.visible = on;
     if (!on) { this.release(); this.ghost.visible = false; }
     this.needsSnap = true;
@@ -687,7 +693,7 @@ class PhysHand {
     const c = new CANNON.LockConstraint(this.body, entry.body, { maxForce: 2000 });
     c.collideConnected = false;
     world.addConstraint(c);
-    entry.body.collisionFilterMask = NO_PLAYER;   // a held prop can't shove the player
+    entry.body.collisionFilterMask = (entry.mask ?? ALL) & ~G.PLAYER;   // a held prop can't shove the player
     this.held = { c, d: entry };
   }
   release() {
@@ -705,7 +711,7 @@ class PhysHand {
     if (!this.held) return;
     world.removeConstraint(this.held.c);
     const otherHand = this === hands.left ? hands.right : hands.left;
-    if (otherHand?.held?.d !== this.held.d) this.held.d.body.collisionFilterMask = ALL;
+    if (otherHand?.held?.d !== this.held.d) this.held.d.body.collisionFilterMask = this.held.d.mask ?? ALL;
     this.held = null;
   }
 }
@@ -1879,7 +1885,7 @@ class Shotgun {
     for (let i = 0; i < SG.PELLETS; i++) {
       const a = Math.sqrt(Math.random()) * SG.SPREAD, phi = Math.random() * Math.PI * 2;
       const pd = dir.clone().addScaledVector(u, Math.cos(phi) * a).addScaledVector(w, Math.sin(phi) * a).normalize();
-      fireBullet(muzzle, pd, { penetration: 0.13, impulse: 1.3, entryR: 0.0085, channelR: 0.007, exitR: 0.013, bleed: 1.2, quiet: true, collect: hits, hole: (p, n) => this.addHole(p, n) });
+      fireBullet(muzzle, pd, { penetration: 0.13, impulse: 1.3, entryR: 0.0085, channelR: 0.007, exitR: 0.013, bleed: 1.2, quiet: true, deferFlush: true, collect: hits, hole: (p, n) => this.addHole(p, n) });
     }
     this.tear(hits, dir);
   }
@@ -1904,6 +1910,7 @@ class Shotgun {
           spawnChunk(vol, c, v);
         }
       }
+      vol.urgent = true;
     }
   }
   addHole(p, n) { Pistol.prototype.addHole.call(this, p, n); }
@@ -2146,8 +2153,9 @@ function meshGrid(vals, nx, ny, nz, mn, h, shade) {
 }
 
 class DamageVolume {
-  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null }) {
+  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null, skin = null, cloth = false, organs = null, chunk = 16, paint = null }) {
     this.sdf = sdf; this.boneSdf = boneSdf; this.h = voxel; this.onHit = onHit;
+    this.skin = skin || FLESH.skin; this.cloth = cloth; this.organs = organs; this.paint = paint;
     this.min = new THREE.Vector3(...min);
     const size = new THREE.Vector3(...max).sub(this.min);
     this.N = [Math.ceil(size.x / voxel), Math.ceil(size.y / voxel), Math.ceil(size.z / voxel)];
@@ -2158,8 +2166,10 @@ class DamageVolume {
     this.base = this.f.slice();
     this.blood = new Float32Array(this.f.length);
     this.emitters = []; this.flows = []; this.beads = []; this.bruises = [];
-    this.C = 16;
+    this.C = chunk;
     this.CN = this.N.map(n => Math.ceil(n / this.C));
+    this.bc = new THREE.Vector3(...max).add(this.min).multiplyScalar(0.5);   // bounding sphere, local
+    this.br = size.length() * 0.5;
     this.object = new THREE.Group();
     this.meshes = new Map();
     this.dirty = new Set();
@@ -2210,15 +2220,16 @@ class DamageVolume {
   shade(x, y, z, c) {
     const depth = -this.sampleArr(this.base, x, y, z);
     let wet = 0;
-    const bone = this.boneSdf ? this.boneSdf(x, y, z) : 1;
+    const bone = this.boneSdf && depth > SKIN_T * 0.55 ? this.boneSdf(x, y, z) : 1;
     if (bone < 0.0015) {
       c.copy(FLESH.bone).lerp(FLESH.marrow, SS(-bone, 0.008, 0.02) * 0.7);
       wet = 0.35;
     } else if (depth <= SKIN_T * 0.55) {
-      c.copy(FLESH.skin);
+      c.copy(this.skin);
       const mottle = hash3(x * 3, y * 3, z * 3) * 0.06;
       c.offsetHSL(0, 0, mottle - 0.03);
-      for (const b of this.bruises) {
+      this.paint?.(x, y, z, c);
+      if (!this.cloth) for (const b of (this.shadeBruises || this.bruises)) {
         const d = Math.hypot(x - b.c.x, y - b.c.y, z - b.c.z);
         if (b.collar && d < b.collar * 2.4) c.lerp(FLESH.collar, 0.85 * (1 - SS(d, b.collar * 1.2, b.collar * 2.4)));
         const age = simTime - b.born;
@@ -2236,6 +2247,12 @@ class DamageVolume {
       else {
         const fiber = 0.5 + 0.5 * Math.sin((x * 0.7 + y * 1.6 + z * 0.4) * 700 + hash3(x, y, z) * 2.5);
         c.copy(FLESH.muscle).lerp(FLESH.muscleDark, fiber * 0.55).lerp(FLESH.deep, SS(depth, 0.05, 0.16));
+        if (this.organs) for (const og of this.organs) {
+          if (og.sdf(x, y, z) > 0.002) continue;
+          const st = 0.5 + 0.5 * Math.sin(x * og.f + Math.sin(y * og.f * 0.7) * 2 + z * og.f * 0.6);
+          c.copy(og.a).lerp(og.b, st * 0.7);
+          break;
+        }
       }
       wet = 0.9;
     }
@@ -2255,6 +2272,12 @@ class DamageVolume {
     const P0 = this.P[0], P01 = P0 * this.P[1];
     const corner = [0, 1, P0, P0 + 1, P01, P01 + 1, P01 + P0, P01 + P0 + 1];
     const n = new THREE.Vector3(), q = new THREE.Vector3();
+    // only bruises that can reach this chunk
+    const bx0 = mn.x + ci0 * h, by0 = mn.y + cj0 * h, bz0 = mn.z + ck0 * h, bx1 = mn.x + i1 * h, by1 = mn.y + j1 * h, bz1 = mn.z + k1 * h;
+    this.shadeBruises = this.bruises.filter(b => {
+      const r = Math.max(b.r * 1.4, b.collar * 2.4);
+      return b.c.x + r > bx0 && b.c.x - r < bx1 && b.c.y + r > by0 && b.c.y - r < by1 && b.c.z + r > bz0 && b.c.z - r < bz1;
+    });
     for (let k = ck0; k < k1; k++) for (let j = cj0; j < j1; j++) for (let i = ci0; i < i1; i++) {
       const o = this.idx(i, j, k);
       let mask = 0;
@@ -2275,6 +2298,7 @@ class DamageVolume {
       this.gradient(q.set(x, y, z), n); nor.push(n.x, n.y, n.z);
       wet.push(this.shade(x, y, z, _dc)); col.push(_dc.r, _dc.g, _dc.b);
     }
+    this.shadeBruises = null;
     const V = (i, j, k) => vid[((k - ck0) * Hh + (j - cj0)) * W + (i - ci0)];
     const quad = (inside, a, b, c, d) => { if (a < 0 || b < 0 || c < 0 || d < 0) return; if (inside) ind.push(a, b, c, a, c, d); else ind.push(a, c, b, a, d, c); };
     for (let k = k0; k < k1; k++) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
@@ -2283,7 +2307,7 @@ class DamageVolume {
       if (i > 0 && k > 0 && inside !== (f[o + P0] < 0)) quad(inside, V(i - 1, j, k - 1), V(i - 1, j, k), V(i, j, k), V(i, j, k - 1));
       if (i > 0 && j > 0 && inside !== (f[o + P01] < 0)) quad(inside, V(i - 1, j - 1, k), V(i, j - 1, k), V(i, j, k), V(i - 1, j, k));
     }
-    const key = `${cx},${cy},${cz}`;
+    const key = cx + cy * 1024 + cz * 1048576;
     let mesh = this.meshes.get(key);
     if (!ind.length) { if (mesh) { this.object.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); } return; }
     const g = new THREE.BufferGeometry();
@@ -2298,12 +2322,14 @@ class DamageVolume {
   }
   markDirty(lo, hi) {   // lo/hi: local-space AABB
     const h = this.h, C = this.C;
-    const c0 = [lo.x, lo.y, lo.z].map((v, a) => Math.max(0, (((v - [this.min.x, this.min.y, this.min.z][a]) / h - 2) / C) | 0));
-    const c1 = [hi.x, hi.y, hi.z].map((v, a) => Math.min(this.CN[a] - 1, (((v - [this.min.x, this.min.y, this.min.z][a]) / h + 2) / C) | 0));
-    for (let cz = c0[2]; cz <= c1[2]; cz++) for (let cy = c0[1]; cy <= c1[1]; cy++) for (let cx = c0[0]; cx <= c1[0]; cx++) this.dirty.add(`${cx},${cy},${cz}`);
+    const m = this.min, CN = this.CN;
+    const x0 = Math.max(0, (((lo.x - m.x) / h - 2) / C) | 0), x1 = Math.min(CN[0] - 1, (((hi.x - m.x) / h + 2) / C) | 0);
+    const y0 = Math.max(0, (((lo.y - m.y) / h - 2) / C) | 0), y1 = Math.min(CN[1] - 1, (((hi.y - m.y) / h + 2) / C) | 0);
+    const z0 = Math.max(0, (((lo.z - m.z) / h - 2) / C) | 0), z1 = Math.min(CN[2] - 1, (((hi.z - m.z) / h + 2) / C) | 0);
+    for (let cz = z0; cz <= z1; cz++) for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) this.dirty.add(cx + cy * 1024 + cz * 1048576);
   }
   flush() {
-    for (const key of this.dirty) { const [x, y, z] = key.split(',').map(Number); this.buildChunk(x, y, z); }
+    for (const key of this.dirty) this.buildChunk(key & 1023, (key >> 10) & 1023, (key >> 20) & 1023);
     this.dirty.clear();
   }
   // ---- carving ----
@@ -2352,8 +2378,11 @@ class DamageVolume {
   addWound(p, rate, tau, kind, size) {
     this.emitters.push({ p: this.rimPoint(p), rate, tau, timer: Math.random() * 0.3 });
     if (this.emitters.length > 60) this.emitters.shift();
-    this.bruises.push({ c: p.clone(), born: simTime, r: Math.max(0.045, size * 8), strength: kind === 'blast' ? 1.25 : 1.1, collar: kind === 'entry' ? size : 0 });
-    if (this.bruises.length > 60) this.bruises.shift();
+    const r = Math.max(0.045, size * 8);
+    const near = kind !== 'entry' && this.bruises.find(b => !b.collar && b.c.distanceTo(p) < b.r * 0.5);
+    if (near) { near.strength = Math.min(1.6, near.strength + 0.15); near.r = Math.max(near.r, r); }
+    else this.bruises.push({ c: p.clone(), born: simTime, r, strength: kind === 'blast' ? 1.25 : 1.1, collar: kind === 'entry' ? size : 0 });
+    if (this.bruises.length > 40) this.bruises.shift();
     this.markDirty(_lo.copy(p).subScalar(0.08), _hi.copy(p).addScalar(0.08));
   }
   // ---- surface blood ----
@@ -2372,7 +2401,7 @@ class DamageVolume {
       e.timer -= dt * e.rate;
       if (e.timer <= 0) {
         e.timer = 0.12 + Math.random() * 0.25;
-        if (this.flows.length < 90) this.flows.push({ p: e.p.clone().add(_v3.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.006)), vol: 0.45 + Math.random() * 0.5 });
+        if (this.flows.length < 60) this.flows.push({ p: e.p.clone().add(_v3.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.006)), vol: 0.45 + Math.random() * 0.5 });
       }
     }
     const n = _n1, t = _t1;
@@ -2407,15 +2436,17 @@ class DamageVolume {
       b.vol -= dt * 0.006;
       if (b.vol <= 0) this.beads.splice(i, 1);
     }
-    this.paintClock += dt;
-    if (this.paintClock > 0.3 && this.dirty.size) { this.paintClock = 0; this.flush(); }
   }
   updateBruises(dt) {   // bruises darken and spread for a couple of minutes; re-shade them now and then
     this.bruiseClock += dt;
-    if (this.bruiseClock < 1.5) return;
+    if (this.bruiseClock < 3) return;
     this.bruiseClock = 0;
     for (const b of this.bruises) if (simTime - b.born < 160) this.markDirty(_lo.copy(b.c).subScalar(b.r * 1.5), _hi.copy(b.c).addScalar(b.r * 1.5));
-    if (this.dirty.size) this.flush();
+  }
+  flushOne() {
+    const key = this.dirty.values().next().value;
+    this.dirty.delete(key);
+    this.buildChunk(key & 1023, (key >> 10) & 1023, (key >> 20) & 1023);
   }
   // ---- rays ----
   toLocalRay(o, d) {
@@ -2445,6 +2476,9 @@ class DamageVolume {
     return tb;
   }
   hitTest(worldO, worldD, maxDist = Infinity) {
+    const c = _bcw.copy(this.bc).applyMatrix4(this.object.matrixWorld).sub(worldO);
+    const tc = c.dot(worldD), br = this.br;
+    if (c.lengthSq() - tc * tc > br * br || tc < -br || tc - br > maxDist) return Infinity;
     const [o, d] = this.toLocalRay(worldO, worldD);
     const span = this.rayBox(o, d);
     if (!span || span[0] > maxDist) return Infinity;
@@ -2461,7 +2495,8 @@ class DamageVolume {
     return false;
   }
   shoot(worldO, worldD, penetration, o = {}) {
-    const entryR = o.entryR ?? 0.0055, channelR = o.channelR ?? 0.0045, exitR = o.exitR ?? 0.0095;
+    const entryR = Math.max(o.entryR ?? 0.0055, this.h * 0.7), channelR = Math.max(o.channelR ?? 0.0045, this.h * 0.55), exitR = Math.max(o.exitR ?? 0.0095, this.h * 1.1);
+    const organsHit = new Set();
     const [ro, d] = this.toLocalRay(worldO, worldD);
     const span = this.rayBox(ro, d);
     if (!span) return null;
@@ -2474,6 +2509,7 @@ class DamageVolume {
       if (solid && !prevSolid && entryT === null) entryT = this.refine(ro, d, t - step, t, true);
       if (!solid && prevSolid) exitT = this.refine(ro, d, t - step, t, false);
       if (solid) {
+        if (this.organs) for (const og of this.organs) if (og.sdf(x, y, z) < 0) organsHit.add(og.name);
         const bone = this.isBone(x, y, z);
         if (bone) hitBone = true;
         remaining -= step * (bone ? 6 : 1);                 // bone stops rounds fast
@@ -2502,13 +2538,13 @@ class DamageVolume {
     } else this.carveSphere(end, channelR * 1.3);
     if (fresh) this.addWound(entry, o.bleed ?? 0.8, 30, 'entry', entryR);
     if (exited) this.addWound(end, (o.bleed ?? 0.8) * 2, 50, 'exit', exitR);
-    this.flush();
+    if (!o.deferFlush) this.flush(); else this.urgent = true;
 
     const M = this.object.matrixWorld;
     const info = {
       entry: entry.clone().applyMatrix4(M), exitPoint: exited ? end.clone().applyMatrix4(M) : null, entryLocal: entry,
       exited, hitBone, remaining: Math.max(0, remaining), channel: penetration - Math.max(0, remaining),
-      dirWorld: worldD.clone(), dirLocal: d, volume: this,
+      dirWorld: worldD.clone(), dirLocal: d, volume: this, organs: [...organsHit],
     };
     if (!o.quiet) {
       bloodSpray(info.entry, worldD.clone().negate(), 6, 1.4);
@@ -2538,24 +2574,48 @@ class DamageVolume {
     const u = new THREE.Vector3(d.y, -d.x, 0); if (u.lengthSq() < 1e-6) u.set(1, 0, 0); u.normalize().applyAxisAngle(d, Math.random() * Math.PI);
     const w = new THREE.Vector3().crossVectors(d, u);
     const pl = (x, y, z, v) => (x - mid.x) * v.x + (y - mid.y) * v.y + (z - mid.z) * v.z;
-    const pieces = count >= 5 ? [(x, y, z) => pl(x, y, z, u), (x, y, z) => Math.max(-pl(x, y, z, u), pl(x, y, z, w)), (x, y, z) => Math.max(-pl(x, y, z, u), -pl(x, y, z, w))]
-      : count >= 3 ? [(x, y, z) => pl(x, y, z, u), (x, y, z) => -pl(x, y, z, u)] : [() => -1];
-    const out = [];
-    for (const piece of pieces) {
-      const c = this.extract((x, y, z) => Math.max(cut(x, y, z), piece(x, y, z)), lo, hi);
-      if (c) out.push(c);
-    }
+    const pieces = count >= 4 ? [(x, y, z) => pl(x, y, z, u), (x, y, z) => -pl(x, y, z, u)] : [() => -1];
+    const out = this.extractPieces(cut, pieces, lo, hi);
     this.carveFn(cut, lo, hi);
     // the crater bleeds hard from several points on its rim
     for (let k = 0; k < 3; k++) {
       const a = Math.random() * Math.PI * 2;
       this.addWound(mid.clone().addScaledVector(u, Math.cos(a) * rr).addScaledVector(w, Math.sin(a) * rr), 2.4, 60, 'blast', rr * 0.5);
     }
-    this.flush();
+    this.urgent = true;   // updateBlood rebuilds the crater a few chunks per frame
+    this.onTear?.(mid);
+    return out;
+  }
+  extractPieces(cut, pieces, lo, hi) {
+    const h = Math.max(0.012, this.h * 1.5);
+    const nx = Math.ceil((hi.x - lo.x) / h) + 1, ny = Math.ceil((hi.y - lo.y) / h) + 1, nz = Math.ceil((hi.z - lo.z) / h) + 1;
+    const base = new Float32Array(nx * ny * nz);
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const x = lo.x + i * h, y = lo.y + j * h, z = lo.z + k * h;
+      const edge = i === 0 || j === 0 || k === 0 || i === nx - 1 || j === ny - 1 || k === nz - 1;
+      base[(k * ny + j) * nx + i] = edge ? 1 : Math.max(this.sample(x, y, z), cut(x, y, z));
+    }
+    const out = [];
+    for (const piece of pieces) {
+      const vals = new Float32Array(base.length);
+      let solid = 0; const cen = new THREE.Vector3();
+      for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const o = (k * ny + j) * nx + i, x = lo.x + i * h, y = lo.y + j * h, z = lo.z + k * h;
+        const v = base[o] > 0 ? base[o] : Math.max(base[o], piece(x, y, z));
+        vals[o] = v;
+        if (v < 0) { solid++; cen.x += x; cen.y += y; cen.z += z; }
+      }
+      if (solid < 8) continue;
+      cen.divideScalar(solid);
+      const g = meshGrid(vals, nx, ny, nz, lo, h, (x, y, z, c) => this.shade(x, y, z, c));
+      if (!g) continue;
+      g.translate(-cen.x, -cen.y, -cen.z);
+      out.push({ geometry: g, center: cen, volume: solid * h * h * h });
+    }
     return out;
   }
   extract(sdf, lo, hi) {
-    const h = this.h * 0.7;
+    const h = Math.max(0.012, this.h * 1.5);   // torn pieces are meshed coarser than the body
     const nx = Math.ceil((hi.x - lo.x) / h) + 1, ny = Math.ceil((hi.y - lo.y) / h) + 1, nz = Math.ceil((hi.z - lo.z) / h) + 1;
     const vals = new Float32Array(nx * ny * nz);
     let solid = 0; const cen = new THREE.Vector3();
@@ -2574,7 +2634,7 @@ class DamageVolume {
     return { geometry: g, center: cen, volume: solid * h * h * h };
   }
 }
-const _dc = new THREE.Color(), _bc = new THREE.Color();
+const _dc = new THREE.Color(), _bc = new THREE.Color(), _bcw = new THREE.Vector3();
 const _lo = new THREE.Vector3(), _hi = new THREE.Vector3(), _down = new THREE.Vector3(), _n1 = new THREE.Vector3(), _t1 = new THREE.Vector3();
 const _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 
@@ -2597,7 +2657,7 @@ function spawnChunk(vol, c, vel) {
   body.velocity.set(vel.x, vel.y, vel.z);
   body.angularVelocity.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14);
   world.addBody(body); scene.add(mesh);
-  const entry = { body, mesh, kind: 'sphere', radius: r, isChunk: true, bleed: 5 + Math.random() * 3, timer: 0 };
+  const entry = { body, mesh, kind: 'sphere', radius: r, isChunk: true, bleed: 3 + Math.random() * 2, timer: 0 };
   let thuds = 0;
   body.addEventListener('collide', (e) => {
     const iv = Math.abs(e.contact.getImpactVelocityAlongNormal());
@@ -2608,7 +2668,7 @@ function spawnChunk(vol, c, vel) {
     }
   });
   dynamics.push(entry); grabbables.push(entry); chunks.push(entry);
-  while (chunks.length > 40) removeChunk(chunks[0]);
+  while (chunks.length > 20) removeChunk(chunks[0]);
 }
 function removeChunk(e) {
   for (const h of [hands.left, hands.right]) if (h.held?.d === e) h.release();
@@ -2731,9 +2791,23 @@ function bloodSpray(p, dir, n, speed) {
     spawnDrop(p, v, 0.003 + Math.random() * 0.004);
   }
 }
+let flushRR = 0;
 const _dropRes = new CANNON.RaycastResult(), _df = new CANNON.Vec3(), _dt2 = new CANNON.Vec3(), _seg = new THREE.Vector3();
 function updateBlood(dt) {
-  for (const vol of damageables) { vol.updateSurfaceBlood(dt); vol.updateBruises(dt); }
+  for (const vol of damageables) { vol.updateSurfaceBlood(dt); vol.updateBruises(dt); vol.paintClock += dt; }
+  let budget = damageables.some(v => v.urgent || v.owe > 4) ? 3 : 2;
+  for (let k = 0; k < damageables.length && budget > 0; k++) {
+    const v = damageables[(flushRR + k) % damageables.length];
+    if (!v.dirty.size) { v.owe = 0; v.urgent = false; continue; }
+    // a fresh hole is owed right away; blood repaints are owed every 0.3 s; either way the chunks
+    // dirty at that moment are rebuilt, oldest first, a few per frame
+    if (v.urgent) { v.owe = Math.max(v.owe || 0, v.dirty.size); v.urgent = false; }
+    else if (!v.owe && v.paintClock >= 0.3) v.owe = v.dirty.size;
+    if (!v.owe) continue;
+    while (budget > 0 && v.dirty.size && v.owe > 0) { v.flushOne(); budget--; v.owe--; }
+    if (!v.owe) v.paintClock = 0;
+  }
+  flushRR++;
   updateChunks(dt);
   for (let i = drops.length - 1; i >= 0; i--) {
     const d = drops[i];
@@ -2747,7 +2821,7 @@ function updateBlood(dt) {
       if (t !== Infinity) {
         const local = _v3.copy(d.p).addScaledVector(_seg, t).applyMatrix4(_dmgInv.copy(vol.object.matrixWorld).invert());
         vol.paintBlood(local, 0.006 + d.s, 0.6);
-        if (d.s > 0.004 && vol.flows.length < 90) vol.flows.push({ p: local.clone(), vol: 0.25 });
+        if (d.s > 0.004 && vol.flows.length < 60) vol.flows.push({ p: local.clone(), vol: 0.25 });
         landed = true; break;
       }
     }
@@ -2803,6 +2877,10 @@ function fireBullet(origin, dir, o, depth = 0) {
   if (best) {
     const r = best.shoot(origin, dir, o.penetration, o);
     if (r) o.collect?.push(r);
+    if (r && best.body) {
+      const b = best.body, e = r.entry, k = o.impulse * (r.exited ? 0.6 : 1);
+      b.applyImpulse(new CANNON.Vec3(dir.x * k, dir.y * k, dir.z * k), new CANNON.Vec3(e.x - b.position.x, e.y - b.position.y, e.z - b.position.z));
+    }
     if (r?.exited && depth < 4) fireBullet(r.exitPoint.clone().addScaledVector(dir, 0.003), dir, { ...o, penetration: r.remaining * 0.8 }, depth + 1);
     return;
   }
@@ -2828,10 +2906,522 @@ const damageSphere = new DamageVolume({
   boneSdf: (x, y, z) => Math.hypot(x, y, z) - 0.11,
   min: [-DMG_R - 0.03, -DMG_R - 0.03, -DMG_R - 0.03], max: [DMG_R + 0.03, DMG_R + 0.03, DMG_R + 0.03],
   onHit: (info) => { damageSphere.hits = (damageSphere.hits || 0) + 1; },
+  chunk: 24,
 });
 damageSphere.object.position.set(-9.5, 1.45, 0.2);
 scene.add(damageSphere.object);
+damageSphere.object.updateMatrixWorld();
 function updateDamageTargets() {}
+
+// ---------- NPC: active ragdoll ----------
+// Fifteen rigid bodies joined by cone-twist and hinge joints. Each joint has a motor that pulls the
+// child toward a standing pose with a capped torque, applied equally and oppositely to both bodies,
+// so the NPC is pure physics: it can be shoved, dragged, tripped and knocked down.
+// Balance is an ankle strategy: the shins and pelvis are servoed upright and the reaction goes into
+// whichever feet are on the ground. In the air it can't balance; a hard enough shove tips it over.
+// Every part except the feet carries a DamageVolume with skin, muscle, bone and organs.
+const matNPC = new CANNON.Material('npc');
+world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matWorld, { friction: 0.9, restitution: 0 }));
+const NPC_MASK = G.STATIC | G.DYN | G.PLAYER | G.HAND | G.GUN;
+const NPC_BLOOD = 320;          // blood loss (integrated wound bleeding) that kills
+
+const _Y = new THREE.Vector3(0, 1, 0);
+
+// SDF helpers (negative inside)
+const sdEll = (x, y, z, a, b, c) => {
+  const k0 = Math.hypot(x / a, y / b, z / c), k1 = Math.hypot(x / (a * a), y / (b * b), z / (c * c));
+  return k1 < 1e-9 ? -Math.min(a, b, c) : k0 * (k0 - 1) / k1;
+};
+const sdRBox = (x, y, z, hx, hy, hz, r) => {
+  const qx = Math.abs(x) - hx + r, qy = Math.abs(y) - hy + r, qz = Math.abs(z) - hz + r;
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qy, qz), 0) - r;
+};
+const sdCap = (x, y, z, y0, y1, r0, r1) => {   // vertical capsule, radius r0 at y0 to r1 at y1
+  const t = Math.max(0, Math.min(1, (y - y0) / (y1 - y0)));
+  return Math.hypot(x, y - (y0 + (y1 - y0) * t), z) - (r0 + (r1 - r0) * t);
+};
+const sdPrism = (x, y, z, hx, hy, hz, r, ry) => {   // rounded in plan, nearly flat top and bottom
+  const qx = Math.abs(x) - hx + r, qz = Math.abs(z) - hz + r;
+  const d2 = Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - r;
+  const a = d2 + ry, b = Math.abs(y) - hy + ry;
+  return Math.hypot(Math.max(a, 0), Math.max(b, 0)) + Math.min(Math.max(a, b), 0) - ry;
+};
+const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * 0.25; };
+const fract = (v) => v - Math.floor(v);
+
+const ORGAN = {
+  brain: { a: new THREE.Color('#d2a8a4'), b: new THREE.Color('#93606a'), f: 300 },
+  heart: { a: new THREE.Color('#82171a'), b: new THREE.Color('#4e0a0b'), f: 140 },
+  lung: { a: new THREE.Color('#dc9893'), b: new THREE.Color('#a75560'), f: 420 },
+  liver: { a: new THREE.Color('#5f1d16'), b: new THREE.Color('#40100a'), f: 90 },
+  gut: { a: new THREE.Color('#dca18c'), b: new THREE.Color('#a76250'), f: 170 },
+};
+const organ = (kind, sdf, fatal = false) => ({ name: kind, sdf, fatal, ...ORGAN[kind] });
+const SHIRT = new THREE.Color('#5d6468'), PANTS = new THREE.Color('#343b46');
+const FACE = { eye: new THREE.Color('#d8d0c4'), iris: new THREE.Color('#2a2420'), lid: new THREE.Color('#8a6656'),
+  lip: new THREE.Color('#a4655a'), brow: new THREE.Color('#3a2d25'), hair: new THREE.Color('#2f2621') };
+function paintFace(x, y, z, c) {   // skin-layer colour on the head: eyes, brows, lips, cropped hair
+  for (const e of [1, -1]) {
+    const d = Math.hypot(x - e * 0.032, y - 0.02, z - 0.081);
+    if (d < 0.0135) { c.copy(Math.hypot(x - e * 0.032, y - 0.02) < 0.0055 && z > 0.088 ? FACE.iris : FACE.eye); return; }
+    if (Math.hypot(x - e * 0.032, y - 0.02) < 0.02 && z > 0.07) c.lerp(FACE.lid, 0.35);
+    if (y > 0.036 && y < 0.047 && Math.abs(x - e * 0.034) < 0.019 && z > 0.07) { c.lerp(FACE.brow, 0.8); return; }
+  }
+  if (Math.abs(x) < 0.021 && Math.abs(y + 0.047 + x * x * 3) < 0.005 && z > 0.06) { c.lerp(FACE.lip, 0.7); return; }
+  const hairline = z > 0.04 ? 0.075 - (z - 0.04) * 0.3 : 0.0 + Math.max(0, z + 0.02) * 0.8;
+  if (y > hairline && !(Math.abs(x) > 0.075 && y < 0.03)) c.lerp(FACE.hair, 0.88);
+}
+
+// Part layout in the NPC's own frame: facing +Z, +X is its left, feet on y = 0.
+function npcDefs() {
+  const d = [
+    { name: 'pelvis', c: [0, 0.98, 0], box: [0.16, 0.085, 0.1], mass: 10, voxel: 0.011, skin: PANTS, cloth: true,
+      sdf: (x, y, z) => sdPrism(x, y, z, 0.16, 0.1, 0.1, 0.06, 0.045),
+      bone: (x, y, z) => Math.abs(sdRBox(x, y + 0.01, z, 0.12, 0.05, 0.065, 0.03)) - 0.007,
+      min: [-0.19, -0.125, -0.13], max: [0.19, 0.125, 0.13] },
+    { name: 'abdomen', c: [0, 1.15, 0], box: [0.15, 0.075, 0.095], mass: 8, voxel: 0.008, skin: SHIRT, cloth: true,
+      sdf: (x, y, z) => sdPrism(x, y, z, 0.146, 0.115, 0.092, 0.06, 0.02),
+      bone: (x, y, z) => sdCap(x, y, z + 0.068, -0.11, 0.11, 0.02, 0.02),
+      organs: [organ('gut', (x, y, z) => sdEll(x, y + 0.005, z - 0.01, 0.108, 0.072, 0.06)),
+               organ('liver', (x, y, z) => sdEll(x + 0.06, y - 0.055, z - 0.008, 0.075, 0.033, 0.05))],
+      min: [-0.18, -0.14, -0.12], max: [0.18, 0.14, 0.12] },
+    { name: 'chest', c: [0, 1.37, 0], box: [0.175, 0.135, 0.11], mass: 14, voxel: 0.008, skin: SHIRT, cloth: true,
+      sdf: (x, y, z) => smin(sdPrism(x, y, z, 0.165 - Math.max(0, -y) * 0.12, 0.14, 0.1, 0.06, 0.035), sdEll(Math.abs(x) - 0.19, y - 0.085, z, 0.06, 0.055, 0.06), 0.04),
+      bone: (x, y, z) => {
+        const spine = sdCap(x, y, z + 0.075, -0.15, 0.15, 0.018, 0.018);
+        const shell = Math.abs(sdRBox(x, y, z, 0.142, 0.11, 0.079, 0.05)) - 0.005;
+        const band = Math.abs(fract((y + 1) / 0.034) - 0.5) * 0.034 - 0.0075;   // ribs, ~3.4 cm apart
+        const sternum = sdRBox(x, y - 0.01, z - 0.078, 0.018, 0.085, 0.008, 0.004);
+        return Math.min(spine, Math.max(shell, band, y - 0.1, -y - 0.12), sternum);
+      },
+      organs: [organ('heart', (x, y, z) => sdEll(x - 0.025, y + 0.005, z - 0.022, 0.047, 0.057, 0.045), true),
+               organ('lung', (x, y, z) => Math.min(sdEll(x - 0.088, y - 0.01, z + 0.005, 0.058, 0.1, 0.062), sdEll(x + 0.088, y - 0.01, z + 0.005, 0.058, 0.1, 0.062)))],
+      min: [-0.27, -0.17, -0.13], max: [0.27, 0.17, 0.13] },
+    { name: 'head', c: [0, 1.66, 0.01], sphere: 0.1, mass: 5, voxel: 0.008,
+      sdf: (x, y, z) => {
+        let s = sdEll(x, y - 0.01, z, 0.085, 0.105, 0.098);
+        s = smin(s, sdEll(x, y + 0.055, z - 0.03, 0.062, 0.05, 0.065), 0.03);           // jaw
+        s = smin(s, sdCap(x, y, z + 0.015, -0.2, -0.06, 0.05, 0.048), 0.03);            // neck
+        s = smin(s, sdEll(x, y + 0.012, z - 0.097, 0.013, 0.024, 0.018), 0.01);         // nose
+        s = smin(s, sdEll(Math.abs(x) - 0.086, y - 0.0, z + 0.005, 0.012, 0.03, 0.02), 0.012);   // ears
+        for (const e of [1, -1]) {                                                       // eye sockets and eyes
+          s = Math.max(s, -(Math.hypot(x - e * 0.032, y - 0.02, z - 0.1) - 0.015));
+          s = Math.min(s, Math.hypot(x - e * 0.032, y - 0.02, z - 0.081) - 0.012);
+        }
+        return s;
+      },
+      bone: (x, y, z) => Math.max(Math.abs(sdEll(x, y - 0.012, z, 0.074, 0.094, 0.087)) - 0.0055, -0.07 - y),
+      organs: [organ('brain', (x, y, z) => sdEll(x, y - 0.025, z + 0.003, 0.063, 0.074, 0.076), true)],
+      paint: paintFace,
+      min: [-0.11, -0.25, -0.12], max: [0.11, 0.14, 0.14] },
+  ];
+  for (const [s, S] of [[1, 'L'], [-1, 'R']]) {
+    d.push(
+      { name: 'upperArm' + S, side: S, c: [s * 0.235, 1.33, 0], box: [0.045, 0.13, 0.045], mass: 2.2, voxel: 0.01,
+        sdf: (x, y, z) => sdCap(x, y, z, -0.13, 0.12, 0.037, 0.046),
+        bone: (x, y, z) => sdCap(x, y, z, -0.12, 0.11, 0.011, 0.011),
+        min: [-0.068, -0.19, -0.068], max: [0.068, 0.19, 0.068] },
+      { name: 'forearm' + S, side: S, c: [s * 0.235, 1.04, 0], box: [0.04, 0.15, 0.04], hand: true, mass: 1.6, voxel: 0.01,
+        sdf: (x, y, z) => smin(sdCap(x, y, z, -0.14, 0.14, 0.03, 0.038), sdRBox(x, y + 0.215, z, 0.018, 0.05, 0.042, 0.015), 0.02),
+        bone: (x, y, z) => Math.min(sdCap(x - 0.012, y, z, -0.14, 0.13, 0.007, 0.007), sdCap(x + 0.012, y, z, -0.14, 0.13, 0.007, 0.007)),
+        min: [-0.06, -0.29, -0.068], max: [0.06, 0.2, 0.068] },
+      { name: 'thigh' + S, side: S, c: [s * 0.1, 0.705, 0], box: [0.07, 0.19, 0.07], mass: 7.5, voxel: 0.012, skin: PANTS, cloth: true,
+        sdf: (x, y, z) => sdCap(x, y, z, -0.21, 0.19, 0.052, 0.072),
+        bone: (x, y, z) => sdCap(x, y, z, -0.2, 0.18, 0.016, 0.016),
+        min: [-0.096, -0.285, -0.096], max: [0.096, 0.285, 0.096] },
+      { name: 'shin' + S, side: S, c: [s * 0.1, 0.29, 0], box: [0.05, 0.2, 0.05], mass: 4.6, voxel: 0.012, skin: PANTS, cloth: true,
+        foot: { at: [0, -0.255, 0.035], box: [0.05, 0.035, 0.12] },   // the shoe is part of the shin: a planted ankle is close to locked
+        sdf: (x, y, z) => sdCap(x, y, z, -0.2, 0.19, 0.04, 0.052),
+        bone: (x, y, z) => sdCap(x, y, z - 0.012, -0.2, 0.19, 0.013, 0.013),
+        min: [-0.076, -0.265, -0.076], max: [0.076, 0.265, 0.076] },
+    );
+  }
+  return d;
+}
+// [parent, child, pivot (NPC frame), type, axis, limit, max torque (N·m), pose]
+// pose: target rotation of the child relative to its parent ([x, y, z] Euler, radians)
+function npcJoints() {
+  const j = [
+    ['pelvis', 'abdomen', [0, 1.065, -0.01], 'ball', [0, 1, 0], 0.5, 320, [0, 0, 0]],
+    ['abdomen', 'chest', [0, 1.24, -0.01], 'ball', [0, 1, 0], 0.45, 280, [0, 0, 0]],
+    ['chest', 'head', [0, 1.53, 0], 'ball', [0, 1, 0], 0.8, 45, [0, 0, 0]],
+  ];
+  for (const [s, S] of [[1, 'L'], [-1, 'R']]) {
+    j.push(
+      ['chest', 'upperArm' + S, [s * 0.215, 1.47, 0], 'ball', [0, -1, 0], 1.7, 45, [-0.05, 0, s * 0.08]],
+      ['upperArm' + S, 'forearm' + S, [s * 0.235, 1.19, 0], 'hinge', [1, 0, 0], [-2.5, 0.02], 25, [-0.3, 0, 0]],
+      ['pelvis', 'thigh' + S, [s * 0.1, 0.905, 0], 'ball', [0, -1, 0], 1.3, 380, [0, 0, 0]],
+      ['thigh' + S, 'shin' + S, [s * 0.1, 0.5, 0], 'hinge', [1, 0, 0], [-0.02, 2.4], 380, [0, 0, 0]],
+    );
+  }
+  return j;
+}
+
+const _nq = new THREE.Quaternion(), _nq2 = new THREE.Quaternion(), _nq3 = new THREE.Quaternion();
+const cq = (b, out) => out.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+// Muscle: a constraint of three rotational motor equations solved with the joints and contacts, so
+// it pulls with the whole articulated body behind it and stays stable. It drives B's spin relative
+// to A toward closing the gap to a target orientation, capped at a torque. The reaction always lands
+// on A: for balance, A is a planted foot, so standing upright pushes against the ground.
+class Muscle extends CANNON.Constraint {
+  constructor(A, B) {
+    super(A, B, { collideConnected: true, wakeUpBodies: false });
+    this.eqs = [0, 1, 2].map(() => new CANNON.RotationalMotorEquation(A, B, 0));
+    this.eqs[0].axisA.set(1, 0, 0); this.eqs[1].axisA.set(0, 1, 0); this.eqs[2].axisA.set(0, 0, 1);
+    for (const e of this.eqs) { e.axisB.copy(e.axisA); this.equations.push(e); }
+    this.want = new CANNON.Vec3(); this.cap = 0;
+    world.addConstraint(this);
+  }
+  // B toward world orientation qT; relWorld: qT is absolute, so subtract A's current spin
+  aim(qT, torque, h, T = 0.1, relWorld = false) {
+    cq(this.bodyB, _nq).invert(); _nq2.copy(qT).multiply(_nq);
+    if (_nq2.w < 0) { _nq2.x = -_nq2.x; _nq2.y = -_nq2.y; _nq2.z = -_nq2.z; _nq2.w = -_nq2.w; }
+    const s = Math.sqrt(Math.max(0, 1 - _nq2.w * _nq2.w));
+    if (s > 1e-5) { const w = Math.min(2 * Math.acos(Math.min(1, _nq2.w)) / T, 14) / s; this.want.set(_nq2.x * w, _nq2.y * w, _nq2.z * w); }
+    else this.want.setZero();
+    if (relWorld) this.want.vsub(this.bodyA.angularVelocity, this.want);
+    this.cap = torque * h;
+  }
+  off() { this.cap = 0; }
+  update() {
+    const w = [this.want.x, this.want.y, this.want.z];
+    for (let i = 0; i < 3; i++) {
+      const e = this.eqs[i];
+      e.enabled = this.cap > 1e-4;
+      e.minForce = -this.cap; e.maxForce = this.cap;
+      e.targetVelocity = -w[i];   // (wA - wB)·axis = target
+    }
+  }
+}
+
+// Balance torque: a spring-damper pulling B upright (toward qT) with the equal and opposite torque on
+// the planted foot A, so it only works through the ground and is limited by what a foot can push.
+const _pdT = new CANNON.Vec3();
+function uprightPD(B, A, qT, kp, kd, cap) {
+  cq(B, _nq).invert(); _nq2.copy(qT).multiply(_nq);
+  if (_nq2.w < 0) { _nq2.x = -_nq2.x; _nq2.y = -_nq2.y; _nq2.z = -_nq2.z; _nq2.w = -_nq2.w; }
+  const s = Math.sqrt(Math.max(0, 1 - _nq2.w * _nq2.w)), ang = 2 * Math.acos(Math.min(1, _nq2.w));
+  const e = s > 1e-6 ? ang / s : 0, wb = B.angularVelocity, wa = A.angularVelocity;
+  _pdT.set(_nq2.x * e * kp - (wb.x - wa.x) * kd, _nq2.y * e * kp - (wb.y - wa.y) * kd, _nq2.z * e * kp - (wb.z - wa.z) * kd);
+  const l = _pdT.length(); if (l > cap) _pdT.scale(cap / l, _pdT);
+  B.torque.vadd(_pdT, B.torque); A.torque.vsub(_pdT, A.torque);
+}
+
+class RagdollNPC {
+  constructor(x, z, yaw) {
+    this.origin = new THREE.Vector3(x, 0, z);
+    this.q0 = new THREE.Quaternion().setFromAxisAngle(_Y, yaw);
+    this.parts = {}; this.list = []; this.drives = []; this.guts = [];
+    this.footRay = new CANNON.RaycastResult();
+    // balance: spring-damper torques (N·m per rad, N·m·s per rad) per planted foot, and their cap
+    this.tune = { kpP: 250, kdP: 12, cap: 70 };
+    for (const def of npcDefs()) this.addPart(def);
+    for (const [pa, ch, pv, type, axis, limit, torque, pose] of npcJoints()) this.addJoint(pa, ch, pv, type, axis, limit, torque, pose);
+    this.reset();
+  }
+  restPos(def, out) { return out.set(...def.c).applyQuaternion(this.q0).add(this.origin); }
+  addPart(def) {
+    const body = new CANNON.Body({ mass: def.mass, material: matNPC, linearDamping: 0.05, angularDamping: 0.15,
+      collisionFilterGroup: G.NPC, collisionFilterMask: NPC_MASK });
+    if (def.sphere) body.addShape(new CANNON.Sphere(def.sphere));
+    else body.addShape(new CANNON.Box(new CANNON.Vec3(...def.box)));
+    if (def.hand) body.addShape(new CANNON.Box(new CANNON.Vec3(0.02, 0.05, 0.04)), new CANNON.Vec3(0, -0.215, 0));
+    if (def.foot) body.addShape(new CANNON.Box(new CANNON.Vec3(...def.foot.box)), new CANNON.Vec3(...def.foot.at));
+    world.addBody(body);
+    const part = { def, body, name: def.name, side: def.side, vol: null, mesh: null };
+    {
+      const vol = new DamageVolume({ sdf: def.sdf, boneSdf: def.bone, min: def.min, max: def.max, voxel: def.voxel,
+        skin: def.skin, cloth: def.cloth, organs: def.organs, paint: def.paint, chunk: def.voxel < 0.009 ? 16 : 24 });
+      vol.body = body; vol.npc = this; vol.part = def.name;
+      vol.onHit = (info) => this.onHit(part, info);
+      vol.onTear = (mid) => this.onTear(part, mid);
+      scene.add(vol.object);
+      part.vol = vol;
+      if (def.foot) {
+        const shoe = new THREE.Mesh(new RoundedShoe(def.foot.box), shoeMat);
+        shoe.position.set(...def.foot.at); shoe.castShadow = true;
+        vol.object.add(shoe);
+      }
+    }
+    const g = def.sphere ? { body, kind: 'sphere', radius: def.sphere } : { body, kind: 'box', half: new CANNON.Vec3(...def.box) };
+    g.mask = NPC_MASK; g.npc = this;
+    grabbables.push(g);
+    this.parts[def.name] = part; this.list.push(part);
+  }
+  addJoint(pa, ch, pv, type, axis, limit, torque, pose) {
+    const A = this.parts[pa], B = this.parts[ch];
+    const p = new THREE.Vector3(...pv);
+    const pA = new CANNON.Vec3(p.x - A.def.c[0], p.y - A.def.c[1], p.z - A.def.c[2]);
+    const pB = new CANNON.Vec3(p.x - B.def.c[0], p.y - B.def.c[1], p.z - B.def.c[2]);
+    const ax = new CANNON.Vec3(...axis);
+    const c = type === 'hinge'
+      ? new CANNON.HingeConstraint(A.body, B.body, { pivotA: pA, pivotB: pB, axisA: ax, axisB: ax, collideConnected: false })
+      : new CANNON.ConeTwistConstraint(A.body, B.body, { pivotA: pA, pivotB: pB, axisA: ax, axisB: ax, angle: limit, twistAngle: 0.6, collideConnected: false });
+    world.addConstraint(c);
+    const leg = /thigh|shin/.test(ch) ? B.side : null;
+    this.drives.push({ A: A.body, B: B.body, m: new Muscle(A.body, B.body), name: ch, torque, leg, hinge: type === 'hinge' ? limit : null,
+      pose: new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose)), target: new THREE.Quaternion() });
+  }
+  reset() {
+    for (const h of [hands.left, hands.right]) if (h.held?.d?.npc === this || h.held?.d?.gut) h.release();
+    for (const g of this.guts) g.dispose();
+    this.guts.length = 0;
+    for (const p of this.list) {
+      const b = p.body, pos = this.restPos(p.def, _v3);
+      b.position.set(pos.x, pos.y, pos.z); b.quaternion.set(this.q0.x, this.q0.y, this.q0.z, this.q0.w);
+      b.velocity.setZero(); b.angularVelocity.setZero();
+      b.collisionFilterMask = NPC_MASK;
+    }
+    this.alive = true; this.cause = null; this.dieAt = 0; this.bloodLost = 0;
+    this.tone = 1; this.flinch = 0; this.fallen = false; this.airTime = 0; this.legWeak = { L: 1, R: 1 };
+    this.spill = null; this.hits = 0;
+    this.sync();
+  }
+  get state() { return this.alive ? (this.fallen ? 'down' : 'standing') : `dead (${this.cause})`; }
+  grounded(shin) {   // is this leg's shoe on something?
+    const p = shin.body.pointToWorldFrame(shin.body.shapeOffsets[1], _gp);
+    this.footRay.reset();
+    return world.raycastClosest(new CANNON.Vec3(p.x, p.y, p.z), new CANNON.Vec3(p.x, p.y - 0.075, p.z),
+      { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, this.footRay);
+  }
+  // runs every physics step, before world.step
+  drive(h) {
+    const pel = this.parts.pelvis.body;
+    const stand = this.alive && !this.fallen && this.tone > 0.15;
+    this.planted = { L: stand && this.grounded(this.parts.shinL), R: stand && this.grounded(this.parts.shinR) };
+    for (const d of this.drives) {
+      let torque = d.torque * this.tone * (d.leg ? this.legWeak[d.leg] : 1);
+      cq(d.A, _nq3);
+      if (d.hinge) {   // hinges also keep knees and elbows from bending the wrong way, alive or dead
+        cq(d.B, _nq).premultiply(_nq2.copy(_nq3).invert());
+        const ang = 2 * Math.atan2(_nq.x, _nq.w);
+        const [lo, hi] = d.hinge;
+        if (ang < lo || ang > hi) { torque = Math.max(torque, 160); d.target.setFromAxisAngle(_X1, Math.max(lo, Math.min(hi, ang))); }
+        else if (this.alive) d.target.copy(d.pose);
+        else d.target.setFromAxisAngle(_X1, ang);
+      } else d.target.copy(d.pose);
+      if (torque < 0.5) d.m.off();
+      else d.m.aim(_nq3.multiply(d.target), torque, h);
+    }
+    // balance: upright shins and pelvis, pushing against whichever feet are planted
+    const yawQ = this.heading(pel, _nq3), tu = this.tune;
+    for (const S of ['L', 'R']) {
+      if (!this.planted[S]) continue;
+      const k = this.tone * this.legWeak[S];
+      uprightPD(pel, this.parts['shin' + S].body, yawQ, tu.kpP * k, tu.kdP * k, tu.cap * k);
+    }
+  }
+  heading(b, out) {   // the body's facing, flattened to a pure yaw
+    const f = _v4.set(0, 0, 1).applyQuaternion(cq(b, _nq));
+    return out.setFromAxisAngle(_Y, Math.atan2(f.x, f.z));
+  }
+  sync() {
+    for (const p of this.list) {
+      const o = p.vol ? p.vol.object : p.mesh;
+      o.position.copy(p.body.position); o.quaternion.copy(p.body.quaternion);
+      o.updateMatrixWorld();
+    }
+  }
+  update(dt) {
+    let rate = 0;
+    for (const p of this.list) if (p.vol) for (const e of p.vol.emitters) rate += e.rate;
+    this.bloodLost += rate * dt;
+    const pel = this.parts.pelvis.body;
+    const up = _v4.set(0, 1, 0).applyQuaternion(cq(pel, _nq)).y;
+    const anyFoot = this.grounded(this.parts.shinL) || this.grounded(this.parts.shinR);
+    this.airTime = anyFoot ? 0 : this.airTime + dt;
+    if (!this.fallen && (up < 0.6 || this.airTime > 0.5 || pel.position.y < 0.55)) this.fallen = true;
+    else if (this.fallen && up > 0.92 && anyFoot && pel.position.y > 0.85) this.fallen = false;
+    if (this.alive) {
+      if (this.bloodLost > NPC_BLOOD) this.kill('blood loss');
+      else if (this.dieAt && simTime >= this.dieAt) this.kill('heart');
+    }
+    this.flinch = Math.max(0, this.flinch - dt * 2.5);
+    let target;
+    if (!this.alive) target = 0;
+    else {
+      const vit = Math.max(0.25, 1 - this.bloodLost / (NPC_BLOOD * 1.4));
+      const heart = this.dieAt ? Math.max(0.2, (this.dieAt - simTime) / 3) : 1;   // heart shot: fading out
+      target = vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen ? 0.35 : 1);
+    }
+    this.tone += (target - this.tone) * Math.min(1, dt * (this.alive ? 6 : this.cause === 'brain' ? 40 : 4));
+    // look at the player while alive
+    if (this.alive && !this.fallen) {
+      const chest = this.parts.chest.body, head = this.drives.find(d => d.name === 'head');
+      const cy = this.heading(chest, _nq3);
+      const fwd = _v4.set(0, 0, 1).applyQuaternion(cy);
+      const to = _v3.set(player.position.x - chest.position.x, 0, player.position.z - chest.position.z);
+      let dyaw = 0;
+      if (to.lengthSq() < 64) dyaw = Math.max(-1.1, Math.min(1.1, Math.atan2(fwd.x * to.z - fwd.z * to.x, fwd.x * to.x + fwd.z * to.z) * -1));
+      head.pose.setFromAxisAngle(_Y, dyaw);
+    }
+    if (this.spill) this.checkSpill();
+    for (const g of this.guts) g.update(dt);
+  }
+  kill(cause) {
+    if (!this.alive) return;
+    this.alive = false; this.cause = cause; this.dieAt = 0;
+    playAt(syn2.squelch, this.parts.chest.body.position, { gain: 0.5, rate: 0.6, ref: 2 });
+  }
+  onHit(part, info) {
+    this.hits++;
+    if (part.name === 'abdomen') this.spill = { near: info.entryLocal.clone(), far: info.exitPoint ? info.exitPoint.clone().applyMatrix4(_dmgInv.copy(part.vol.object.matrixWorld).invert()) : null };
+    if (!this.alive) return;
+    if (info.organs.includes('brain')) { this.kill('brain'); return; }
+    if (info.organs.includes('heart') && !this.dieAt) {
+      this.dieAt = simTime + 2.5 + Math.random() * 1.5;
+      part.vol.addWound(info.entryLocal, 4, 40, 'blast', 0.01);   // pumping out
+    }
+    this.flinch = Math.min(1, this.flinch + (info.channel > 0.05 ? 0.5 : 0.25));
+    if (part.side && /thigh|shin/.test(part.name)) this.legWeak[part.side] *= 0.6;
+  }
+  onTear(part, mid) {
+    if (part.name === 'abdomen') this.spill = { near: mid.clone(), far: null };
+    if (this.alive && part.name === 'head') this.kill('brain');
+  }
+  // Is the belly wall open wide enough near the last hit for the intestines to come out?
+  checkSpill() {
+    const sp = this.spill; this.spill = null;
+    const v = this.parts.abdomen.vol;
+    for (const p of [sp.near, sp.far]) {
+      if (!p || this.guts.length >= 2) continue;
+      if (this.guts.some(g => g.anchor.distanceTo(p) < 0.07)) continue;
+      const h = v.h, R = 0.07, mn = v.min;
+      const i0 = Math.max(0, Math.floor((p.x - R - mn.x) / h)), i1 = Math.min(v.N[0], Math.ceil((p.x + R - mn.x) / h));
+      const j0 = Math.max(0, Math.floor((p.y - R - mn.y) / h)), j1 = Math.min(v.N[1], Math.ceil((p.y + R - mn.y) / h));
+      const k0 = Math.max(0, Math.floor((p.z - R - mn.z) / h)), k1 = Math.min(v.N[2], Math.ceil((p.z + R - mn.z) / h));
+      let n = 0; const cen = new THREE.Vector3();
+      for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const o = v.idx(i, j, k), b = v.base[o];
+        if (b > -0.004 || b < -0.03 || v.f[o] <= 0) continue;   // only the belly wall, only what's gone
+        n++; cen.x += mn.x + i * h; cen.y += mn.y + j * h; cen.z += mn.z + k * h;
+      }
+      const area = n * h * h * h / 0.026;
+      if (area < 0.0009) continue;
+      cen.divideScalar(n);
+      if (cen.z < -0.03) continue;   // the back is all spine and muscle
+      this.guts.push(new Guts(this, v, cen));
+    }
+  }
+}
+const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3();
+const shoeMat = new THREE.MeshStandardMaterial({ color: '#25272a', roughness: 0.75 });
+function RoundedShoe([hx, hy, hz]) {   // a box with the toe rounded off
+  const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2, 2, 1, 4), a = g.attributes.position;
+  for (let i = 0; i < a.count; i++) {
+    const z = a.getZ(i), y = a.getY(i);
+    if (z > hz * 0.4) { const t = (z - hz * 0.4) / (hz * 0.6); a.setX(i, a.getX(i) * (1 - 0.35 * t)); if (y > 0) a.setY(i, y - hy * 0.9 * t); }
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Intestines: a loop of small spheres on distance constraints, both ends rooted inside the belly.
+// They are paid out one link at a time through the hole and fall under gravity; you can grab them
+// and pull them out further, and yank hard enough to tear them free.
+const GUT_N = 30, GUT_SIDES = 8, GUT_R = 0.018, GUT_LINK = 0.034;
+const gutMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.22, metalness: 0, side: THREE.DoubleSide });
+class Guts {
+  constructor(npc, vol, anchor) {
+    this.npc = npc; this.vol = vol; this.body = vol.body;
+    this.anchor = anchor.clone();
+    this.normal = vol.baseNormal(anchor, new THREE.Vector3());
+    this.inner = anchor.clone().addScaledVector(this.normal, -0.035);
+    this.nodes = []; this.roots = []; this.timer = 0; this.drip = 0; this.age = 0;
+    const nv = GUT_N * GUT_SIDES;
+    this.pos = new Float32Array(nv * 3); this.nor = new Float32Array(nv * 3);
+    const col = new Float32Array(nv * 3), c = new THREE.Color(), ind = [];
+    for (let i = 0; i < GUT_N; i++) for (let j = 0; j < GUT_SIDES; j++) {
+      c.copy(ORGAN.gut.a).lerp(ORGAN.gut.b, (i % 3 === 0 ? 0.55 : 0.1) + Math.random() * 0.15);
+      if (j === 0 || j === 4) c.lerp(FLESH.blood, 0.3);
+      col.set([c.r, c.g, c.b], (i * GUT_SIDES + j) * 3);
+    }
+    for (let i = 0; i < GUT_N - 1; i++) for (let j = 0; j < GUT_SIDES; j++) {
+      const a = i * GUT_SIDES + j, b = i * GUT_SIDES + (j + 1) % GUT_SIDES, cc = a + GUT_SIDES, d = b + GUT_SIDES;
+      ind.push(a, b, cc, b, d, cc);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.nor, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setIndex(ind); g.setDrawRange(0, 0);
+    this.mesh = new THREE.Mesh(g, gutMat); this.mesh.frustumCulled = false; this.mesh.castShadow = true;
+    scene.add(this.mesh);
+    playAt(syn2.squelch, this.body.position, { gain: 0.9, rate: 0.5, ref: 2 });
+  }
+  toWorld(local, out) { return out.copy(local).applyQuaternion(cq(this.body, _nq)).add(this.body.position); }
+  root(node) {
+    const c = new CANNON.PointToPointConstraint(this.body, new CANNON.Vec3(this.inner.x, this.inner.y, this.inner.z), node.body, new CANNON.Vec3(0, 0, 0), 60);
+    world.addConstraint(c); this.roots.push({ c, node });
+  }
+  payOut() {
+    const i = this.nodes.length;
+    const p = this.toWorld(i === 0 ? this.inner : this.anchor, _v3);
+    const n = _v4.copy(this.normal).applyQuaternion(cq(this.body, _nq));
+    const b = new CANNON.Body({ mass: 0.07, material: matWorld, shape: new CANNON.Sphere(GUT_R),
+      collisionFilterGroup: G.GUTS, collisionFilterMask: G.STATIC | G.DYN | G.HAND, linearDamping: 0.35, angularDamping: 0.6 });
+    b.position.set(p.x + n.x * 0.01, p.y + n.y * 0.01, p.z + n.z * 0.01);
+    const v = this.body.velocity;
+    b.velocity.set(v.x + n.x * 0.7 + (Math.random() - 0.5) * 0.3, v.y + n.y * 0.7, v.z + n.z * 0.7 + (Math.random() - 0.5) * 0.3);
+    world.addBody(b);
+    const node = { body: b, kind: 'sphere', radius: 0.022, mask: G.STATIC | G.DYN | G.HAND, gut: this };
+    if (i === 0) this.root(node);
+    else world.addConstraint(node.link = new CANNON.DistanceConstraint(this.nodes[i - 1].body, b, GUT_LINK, 120));
+    this.nodes.push(node); grabbables.push(node);
+    if (i === GUT_N - 1) this.root(node);   // the far end stays inside too: a loop hangs out
+  }
+  update(dt) {
+    this.age += dt;
+    this.timer -= dt;
+    if (this.nodes.length < GUT_N && this.timer <= 0) { this.timer = 0.05; this.payOut(); }
+    // pulled hard enough, a root tears loose
+    for (let i = this.roots.length - 1; i >= 0; i--) {
+      const r = this.roots[i], w = this.toWorld(this.inner, _v3), p = r.node.body.position;
+      if (Math.hypot(p.x - w.x, p.y - w.y, p.z - w.z) > 0.12) {
+        world.removeConstraint(r.c); this.roots.splice(i, 1);
+        playAt(syn2.squelch, w, { gain: 0.6, rate: 0.9, ref: 1.5 });
+        bloodSpray(w.clone(), _v4.set(0, -1, 0), 8, 1);
+      }
+    }
+    this.drip -= dt;
+    if (this.drip <= 0 && this.nodes.length && this.age < 40) {
+      this.drip = 0.2 + Math.random() * 0.3;
+      const nb = this.nodes[(Math.random() * this.nodes.length) | 0].body.position;
+      spawnDrop(_v3.set(nb.x, nb.y - GUT_R, nb.z), _v4.set(0, -0.05, 0), 0.0035 + Math.random() * 0.002);
+    }
+    // tube through the nodes
+    const N = this.nodes.length;
+    const t = new THREE.Vector3(), nrm = new THREE.Vector3(), bi = new THREE.Vector3(), ref = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < N; i++) {
+      const a = this.nodes[Math.max(0, i - 1)].body.position, b = this.nodes[Math.min(N - 1, i + 1)].body.position, p = this.nodes[i].body.position;
+      t.set(b.x - a.x, b.y - a.y, b.z - a.z); if (t.lengthSq() < 1e-10) t.set(0, 1, 0); t.normalize();
+      nrm.copy(ref).addScaledVector(t, -ref.dot(t)); if (nrm.lengthSq() < 1e-6) nrm.set(1, 0, 0).addScaledVector(t, -t.x);
+      nrm.normalize(); bi.crossVectors(t, nrm); ref.copy(nrm);
+      const r = GUT_R * (1.05 + 0.18 * Math.sin(i * 1.9));
+      for (let j = 0; j < GUT_SIDES; j++) {
+        const an = j / GUT_SIDES * Math.PI * 2, cs = Math.cos(an), sn = Math.sin(an);
+        const nx = nrm.x * cs + bi.x * sn, ny = nrm.y * cs + bi.y * sn, nz = nrm.z * cs + bi.z * sn, o = (i * GUT_SIDES + j) * 3;
+        this.pos[o] = p.x + nx * r; this.pos[o + 1] = p.y + ny * r; this.pos[o + 2] = p.z + nz * r;
+        this.nor[o] = nx; this.nor[o + 1] = ny; this.nor[o + 2] = nz;
+      }
+    }
+    const g = this.mesh.geometry;
+    g.setDrawRange(0, Math.max(0, N - 1) * GUT_SIDES * 6);
+    g.attributes.position.needsUpdate = true; g.attributes.normal.needsUpdate = true;
+  }
+  dispose() {
+    for (const h of [hands.left, hands.right]) if (h.held?.d?.gut === this) h.release();
+    for (const r of this.roots) world.removeConstraint(r.c);
+    for (const n of this.nodes) {
+      if (n.link) world.removeConstraint(n.link);
+      world.removeBody(n.body);
+      const i = grabbables.indexOf(n); if (i >= 0) grabbables.splice(i, 1);
+    }
+    scene.remove(this.mesh); this.mesh.geometry.dispose();
+  }
+}
+
+const npc = new RagdollNPC(-7.8, 3.4, Math.PI / 2);   // in the lane by the shotgun bench, facing the benches
 
 // ---------- reset buttons (for VR: push it with your hand) ----------
 const resetButtons = [];
@@ -2882,6 +3472,7 @@ new ResetButton(1.2, 6.9);
 function resetRange() {
   for (const g of guns) { g.reset(); for (const m of g.holes) scene.remove(m); g.holes.length = 0; }
   for (const v of damageables) v.reset();
+  npc.reset();
   clearBlood();
   for (const d of dynamics) {
     if (!d.spawnPos) continue;
@@ -2891,7 +3482,7 @@ function resetRange() {
 }
 
 // debug handle for console tinkering
-window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, npc, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -2918,12 +3509,14 @@ function frame(dt, draw) {
       hand.computeTarget(dolly.matrixWorld, _dq);
       hand.drive(H);
     }
+    npc.drive(H);
     world.step(H);
     updateHandContacts();
     simTime += H;
     accumulator -= H; n++;
   }
   if (n === 6) accumulator = 0;
+  npc.sync();
 
   if (player.position.y < -15) respawn();
 
@@ -2942,6 +3535,7 @@ function frame(dt, draw) {
   for (const g of guns) g.update(dt);
   ammoPouch.update(dt);
   for (const b of resetButtons) b.update(dt);
+  npc.update(dt);
   updateDamageTargets(dt);
   updateDebris(dt);
   updateBlood(dt);

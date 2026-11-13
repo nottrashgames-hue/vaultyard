@@ -24,3 +24,10 @@ Pump-action 12 gauge on the second bench, modelled from primitives. Grip it to p
 
 ## Gore (direction: GREYMEAT by Lev Filippov)
 The flesh target has layers (skin, fat, muscle) over a bone core. Wounds are wet, entries get an abrasion collar, bruises spread and darken over a couple of minutes and yellow at the edges. Blood runs down the skin as surface parcels and only drips when it gathers on an overhang. Drops are 2D sprites; splats stay. Push a red RESET RANGE button (by the benches, or at spawn) to reset everything.
+
+## Ragdoll NPC (down the shotgun lane)
+An active ragdoll: 13 rigid bodies on cone-twist and hinge joints. Each joint has a muscle (rotational motors solved with the joints and contacts) that pulls it toward a standing pose with a capped torque; balance is a spring-damper on the pelvis that reacts into the planted shoes, so it only works through the ground. Walk into it, shove it with your hands or grab a limb and drag it; push hard enough and it falls.
+
+Every part carries its own `DamageVolume` with skin or clothing, muscle, bone (skull, ribs, spine, long bones) and organs (brain, heart, lungs, liver, intestines). A round through the brain kills instantly; the heart gives it a few seconds; blood loss from its wounds weakens it and eventually kills it; leg hits make it buckle. Open the belly wide enough and a loop of intestine spills out, swings, drips and can be grabbed; yank it hard and it tears loose.
+
+Torn shotgun chunks are meshed at a coarser 12 mm grid, and crater rebuilds are spread over the next few frames.
