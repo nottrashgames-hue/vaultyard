@@ -1115,6 +1115,7 @@ function goreSound(kind, pos, gain = 1, o = {}) {
   const rate = (o.rate ?? 1) * (0.9 + Math.random() * 0.2), ref = o.ref ?? 1.5;
   if (kind === 'splat') {
     if (goreSplats.length) { const s = pick(goreSplats); playAt(s.buf, pos, { offset: s.off, duration: s.dur, gain: gain * 0.9, ref, rate }); }
+    else if (sfx.squishsplat) playAt(sfx.squishsplat, pos, { gain: gain * 0.8, ref, rate });   // hosts that don't serve FLAC
     else playAt(syn2.splat, pos, { gain, ref, rate });
     return;
   }
