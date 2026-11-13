@@ -18,3 +18,9 @@ See CREDITS.md for asset licenses.
 
 ## Blood
 Wounds on damage volumes paint a blood trail down the surface and drip from its lowest point, slowing as they clot. Impacts spray drops; every drop that lands on static geometry leaves a splat that stays (instanced, up to 3000).
+
+## Shotgun
+Pump-action 12 gauge on the second bench, modelled from primitives. Grip it to pick it up by the stock, grip the forend with the other hand to aim two-handed and pump. Push shells into the port under the receiver (6 in the tube); the pouch gives shells while you hold it. Nine pellets per shot; pellets that land close together tear chunks of flesh out that fall as physics pieces.
+
+## Gore (direction: GREYMEAT by Lev Filippov)
+The flesh target has layers (skin, fat, muscle) over a bone core. Wounds are wet, entries get an abrasion collar, bruises spread and darken over a couple of minutes and yellow at the edges. Blood runs down the skin as surface parcels and only drips when it gathers on an overhang. Drops are 2D sprites; splats stay. Push a red RESET RANGE button (by the benches, or at spawn) to reset everything.
