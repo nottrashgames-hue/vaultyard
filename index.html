@@ -101,7 +101,7 @@
     </dl>
     <h2>Ragdoll NPC (down the shotgun lane)</h2>
     <dl>
-      <dt>Physics</dt><dd>Fully simulated body with muscle motors and ankle balance. Walk into it, shove it or grab a limb and drag it; push hard enough and it falls</dd>
+      <dt>Physics</dt><dd>Fully simulated body with muscle motors and balance. Shove it and it stumbles, stepping to catch itself; push hard enough and it falls, then gets back up after a moment. Grab a limb and drag it</dd>
       <dt>Damage</dt><dd>Skin, muscle, bone and organs in every part. A brain or heart hit is fatal (the heart takes a few seconds); heavy bleeding kills too; leg hits make it buckle</dd>
       <dt>Organs</dt><dd>Open the belly wide enough (shotgun, or several hits close together) and the intestines spill out. You can grab them</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
@@ -3114,7 +3114,7 @@ class RagdollNPC {
     this.parts = {}; this.list = []; this.drives = []; this.guts = [];
     this.footRay = new CANNON.RaycastResult();
     // balance: spring-damper torques (N·m per rad, N·m·s per rad) per planted foot, and their cap
-    this.tune = { kpP: 250, kdP: 12, cap: 70 };
+    this.tune = { kpP: 250, kdP: 12, cap: 70, capture: 0.32, fwd: 0.12, back: 0.08, side: 0.15, swingK: 1400, swingC: 80, swingMax: 380 };
     for (const def of npcDefs()) this.addPart(def);
     for (const [pa, ch, pv, type, axis, limit, torque, pose] of npcJoints()) this.addJoint(pa, ch, pv, type, axis, limit, torque, pose);
     this.reset();
@@ -3175,9 +3175,11 @@ class RagdollNPC {
     this.alive = true; this.cause = null; this.dieAt = 0; this.bloodLost = 0;
     this.tone = 1; this.flinch = 0; this.fallen = false; this.airTime = 0; this.legWeak = { L: 1, R: 1 };
     this.spill = null; this.hits = 0;
+    this.step = null; this.stepCool = 0; this.steps = 0;
+    this.rising = false; this.riseT = 0; this.downTime = 0; this.rises = 0; this.crouch = 0;
     this.sync();
   }
-  get state() { return this.alive ? (this.fallen ? 'down' : 'standing') : `dead (${this.cause})`; }
+  get state() { return this.alive ? (this.fallen ? (this.rising ? 'getting up' : 'down') : this.step ? 'stepping' : 'standing') : `dead (${this.cause})`; }
   grounded(shin) {   // is this leg's shoe on something?
     const p = shin.body.pointToWorldFrame(shin.body.shapeOffsets[1], _gp);
     this.footRay.reset();
@@ -3189,17 +3191,28 @@ class RagdollNPC {
     const pel = this.parts.pelvis.body;
     const stand = this.alive && !this.fallen && this.tone > 0.15;
     this.planted = { L: stand && this.grounded(this.parts.shinL), R: stand && this.grounded(this.parts.shinR) };
+    if (stand) this.balanceStep(h); else this.step = null;
+    if (this.step) this.planted[this.step.S] = false;
+    const sw = this.step, swS = sw ? Math.sin(Math.PI * Math.min(1, sw.t / sw.dur)) : 0;
+    const crouch = this.rising ? this.crouch : 0;
     for (const d of this.drives) {
       let torque = d.torque * this.tone * (d.leg ? this.legWeak[d.leg] : 1);
+      d.target.copy(d.pose);
+      if (d.leg && sw && d.leg === sw.S) {   // swing leg: soft, knee and hip bend to clear the ground
+        torque *= 0.35;
+        d.pose2 = (d.name.startsWith('shin') ? 1.0 : -0.55) * swS;
+      } else if (d.leg && crouch) {           // getting up: start in a crouch, straighten as the hips rise
+        d.pose2 = (d.name.startsWith('shin') ? 1.6 : -1.2) * crouch;
+      } else d.pose2 = 0;
       cq(d.A, _nq3);
       if (d.hinge) {   // hinges also keep knees and elbows from bending the wrong way, alive or dead
         cq(d.B, _nq).premultiply(_nq2.copy(_nq3).invert());
         const ang = 2 * Math.atan2(_nq.x, _nq.w);
         const [lo, hi] = d.hinge;
         if (ang < lo || ang > hi) { torque = Math.max(torque, 160); d.target.setFromAxisAngle(_X1, Math.max(lo, Math.min(hi, ang))); }
-        else if (this.alive) d.target.copy(d.pose);
+        else if (this.alive) d.target.setFromAxisAngle(_X1, Math.max(lo, Math.min(hi, 2 * Math.atan2(d.pose.x, d.pose.w) + d.pose2)));
         else d.target.setFromAxisAngle(_X1, ang);
-      } else d.target.copy(d.pose);
+      } else if (d.pose2) d.target.multiply(_nq.setFromAxisAngle(_X1, d.pose2));
       if (torque < 0.5) d.m.off();
       else d.m.aim(_nq3.multiply(d.target), torque, h);
     }
@@ -3209,6 +3222,114 @@ class RagdollNPC {
       if (!this.planted[S]) continue;
       const k = this.tone * this.legWeak[S];
       uprightPD(pel, this.parts['shin' + S].body, yawQ, tu.kpP * k, tu.kdP * k, tu.cap * k);
+    }
+    if (this.rising) this.riseForces(h);
+  }
+  // ---- catching itself ----
+  // Capture point: where the centre of mass would come to rest over a planted foot, given how fast it is
+  // moving. If it leaves the feet, swing a leg out and put that foot down on it. The swing is a force on
+  // the shoe with the equal and opposite force on the hips, like the leg muscles doing it.
+  massCenter(c, v) {
+    let m = 0; c.set(0, 0, 0); v.set(0, 0, 0);
+    for (const p of this.list) {
+      const b = p.body; m += b.mass;
+      c.x += b.position.x * b.mass; c.y += b.position.y * b.mass; c.z += b.position.z * b.mass;
+      v.x += b.velocity.x * b.mass; v.y += b.velocity.y * b.mass; v.z += b.velocity.z * b.mass;
+    }
+    c.divideScalar(m); v.divideScalar(m);
+  }
+  shoe(S, out) { const b = this.parts['shin' + S].body; b.pointToWorldFrame(b.shapeOffsets[1], _gp); return out.set(_gp.x, _gp.y, _gp.z); }
+  frame(b) {   // the body's forward (returned) and left (_nsl) directions, flattened
+    const f = _nsf.set(0, 0, 1).applyQuaternion(cq(b, _nq)); f.y = 0;
+    if (f.lengthSq() < 0.04) { f.set(0, 1, 0).applyQuaternion(_nq); f.y = 0; }
+    f.normalize(); _nsl.set(f.z, 0, -f.x);
+    return f;
+  }
+  balanceStep(h) {
+    const pel = this.parts.pelvis.body;
+    this.massCenter(_ncm, _ncv);
+    const cpx = _ncm.x + _ncv.x * this.tune.capture, cpz = _ncm.z + _ncv.z * this.tune.capture;   // capture point
+    this.cp = [cpx, cpz];
+    if (!this.step) {
+      this.stepCool -= h;
+      if (this.stepCool > 0 || !(this.planted.L || this.planted.R)) return;
+      const sL = this.shoe('L', _ns1), sR = this.shoe('R', _ns2);
+      const both = this.planted.L && this.planted.R;
+      const cx = both ? (sL.x + sR.x) / 2 : this.planted.L ? sL.x : sR.x;
+      const cz = both ? (sL.z + sR.z) / 2 : this.planted.L ? sL.z : sR.z;
+      const f = this.frame(pel), dx = cpx - cx, dz = cpz - cz;
+      const df = dx * f.x + dz * f.z, dl = dx * _nsl.x + dz * _nsl.z;
+      const tu = this.tune;
+      if (df < tu.fwd && df > -tu.back && Math.abs(dl) < tu.side) return;   // still over the feet
+      let S;
+      if (Math.abs(dl) > 0.07) S = dl > 0 ? 'L' : 'R';                      // falling sideways: that side's foot
+      else S = Math.hypot(cpx - sL.x, cpz - sL.z) > Math.hypot(cpx - sR.x, cpz - sR.z) ? 'L' : 'R';
+      const O = S === 'L' ? 'R' : 'L';
+      if (!this.planted[O]) { if (!this.planted[S]) return; S = O; }        // never lift the only planted foot
+      const from = (S === 'L' ? sL : sR).clone(), other = (S === 'L' ? sR : sL), side = S === 'L' ? 1 : -1;
+      const len = Math.hypot(dx, dz) || 1;
+      const to = new THREE.Vector3(cpx + _nsl.x * side * 0.07 + dx / len * 0.06, from.y, cpz + _nsl.z * side * 0.07 + dz / len * 0.06);
+      let reach = Math.hypot(to.x - other.x, to.z - other.z);
+      if (reach > 0.62) { to.x = other.x + (to.x - other.x) * 0.62 / reach; to.z = other.z + (to.z - other.z) * 0.62 / reach; }
+      const across = (to.x - other.x) * _nsl.x + (to.z - other.z) * _nsl.z;   // keep the feet from crossing
+      if (across * side < 0.12) { const push = 0.12 - across * side; to.x += _nsl.x * side * push; to.z += _nsl.z * side * push; }
+      this.step = { S, t: 0, dur: 0.26 / Math.max(0.5, this.legWeak[S]), from, to };
+      this.steps++;
+      return;
+    }
+    const st = this.step, shin = this.parts['shin' + st.S].body;
+    st.t += h;
+    const s = Math.min(1, st.t / st.dur), sm = s * s * (3 - 2 * s), ds = 6 * s * (1 - s) / st.dur;
+    const lift = 0.09 * Math.sin(Math.PI * s), dlift = 0.09 * Math.PI * Math.cos(Math.PI * s) / st.dur;
+    const tx = st.from.x + (st.to.x - st.from.x) * sm, ty = st.from.y + lift, tz = st.from.z + (st.to.z - st.from.z) * sm;
+    const p = this.shoe(st.S, _ns1);
+    shin.getVelocityAtWorldPoint(_gp.set(p.x, p.y, p.z), _ngv);
+    const k = this.tune.swingK * this.tone * this.legWeak[st.S], c = this.tune.swingC * this.tone;
+    _nsF.set((tx - p.x) * k + ((st.to.x - st.from.x) * ds - _ngv.x) * c,
+            (ty - p.y) * k + (dlift - _ngv.y) * c + 12 * GRAVITY * this.tone,
+            (tz - p.z) * k + ((st.to.z - st.from.z) * ds - _ngv.z) * c);
+    const l = _nsF.length(), cap = this.tune.swingMax * this.tone; if (l > cap) _nsF.scale(cap / l, _nsF);
+    shin.applyForce(_nsF, _ngr.set(p.x - shin.position.x, p.y - shin.position.y, p.z - shin.position.z));
+    pel.applyForce(_nsF.negate(_nsF), _ngr.set(0, 0, 0));   // hip muscles: the hips take the push-back
+    if (s >= 1 && (this.grounded(this.parts['shin' + st.S]) || st.t > st.dur + 0.2)) { this.step = null; this.stepCool = 0.12; }
+  }
+  // ---- getting up ----
+  // Lift the hips and chest, tuck the feet under and turn upright; every push lands on whatever parts
+  // are on the ground, so it can only get up off something solid.
+  riseForces(h) {
+    const P = this.parts, pel = P.pelvis.body, chest = P.chest.body;
+    let low = Infinity;
+    for (const p of this.list) low = Math.min(low, p.body.aabb.lowerBound.y);
+    const sup = this.list.filter(p => !/pelvis|abdomen|chest|head/.test(p.name) && p.body.aabb.lowerBound.y < low + 0.06).map(p => p.body);
+    if (!sup.length) return;
+    const prog = Math.min(1, this.riseT / 1.6);
+    const ty = low + 0.12 + 0.86 * prog;                                      // hip height target climbs
+    this.frame(pel);
+    const sL = this.shoe('L', _ns1), sR = this.shoe('R', _ns2);
+    const mx = (sL.x + sR.x) / 2, mz = (sL.z + sR.z) / 2;
+    const sLx = sL.x, sLz = sL.z, sRx = sR.x, sRz = sR.z;
+    const lift = (b, target, k, cmax) => {
+      _nsF.set((mx - b.position.x) * 260 - b.velocity.x * 160, (target - b.position.y) * k - b.velocity.y * 120, (mz - b.position.z) * 260 - b.velocity.z * 160);
+      _nsF.x = Math.max(-200, Math.min(200, _nsF.x)); _nsF.z = Math.max(-200, Math.min(200, _nsF.z));
+      _nsF.y = Math.max(0, Math.min(cmax, _nsF.y));
+      b.applyForce(_nsF, _ngr.set(0, 0, 0));
+      _nsF.scale(-1 / sup.length, _nsF);
+      for (const s of sup) s.applyForce(_nsF, _ngr.set(0, 0, 0));
+    };
+    lift(pel, ty, 1800, 950);
+    lift(chest, ty + 0.39 * prog, 1200, 500);
+    for (const b of [pel, chest]) {   // tip each straight up from where it is: no rolling over to face a heading
+      cq(b, _nq3); _ns1.set(0, 1, 0).applyQuaternion(_nq3);
+      _rq.setFromUnitVectors(_ns1, _Y).multiply(_nq3);
+      for (const s of sup) uprightPD(b, s, _rq, 300 / sup.length, 30 / sup.length, 160 / sup.length);
+    }
+    for (const [S, side] of [['L', 1], ['R', -1]]) {                         // tuck each foot under the hips
+      const shin = P['shin' + S].body, qx = S === 'L' ? sLx : sRx, qz = S === 'L' ? sLz : sRz;
+      const q = this.shoe(S, _ns2);
+      _nsF.set((pel.position.x + _nsl.x * side * 0.1 - qx) * 700 - shin.velocity.x * 60, 0, (pel.position.z + _nsl.z * side * 0.1 - qz) * 700 - shin.velocity.z * 60);
+      const l = _nsF.length(); if (l > 300) _nsF.scale(300 / l, _nsF);
+      shin.applyForce(_nsF, _ngr.set(q.x - shin.position.x, q.y - shin.position.y, q.z - shin.position.z));
+      pel.applyForce(_nsF.negate(_nsF), _ngr.set(0, 0, 0));
     }
   }
   heading(b, out) {   // the body's facing, flattened to a pure yaw
@@ -3230,8 +3351,20 @@ class RagdollNPC {
     const up = _v4.set(0, 1, 0).applyQuaternion(cq(pel, _nq)).y;
     const anyFoot = this.grounded(this.parts.shinL) || this.grounded(this.parts.shinR);
     this.airTime = anyFoot ? 0 : this.airTime + dt;
-    if (!this.fallen && (up < 0.6 || this.airTime > 0.5 || pel.position.y < 0.55)) this.fallen = true;
-    else if (this.fallen && up > 0.92 && anyFoot && pel.position.y > 0.85) this.fallen = false;
+    if (!this.fallen && (up < 0.6 || this.airTime > 0.5 || pel.position.y < 0.55)) { this.fallen = true; this.step = null; }
+    else if (this.fallen && up > 0.9 && anyFoot && pel.position.y > 0.85 && Math.hypot(pel.velocity.x, pel.velocity.z) < 0.35) { this.fallen = false; this.rising = false; this.downTime = 0; }
+    // down but still able: wait for the tumble to stop, then try to get up (and try again if it fails)
+    const able = this.alive && !this.dieAt && this.bloodLost < NPC_BLOOD * 0.8 && Math.min(this.legWeak.L, this.legWeak.R) > 0.3;
+    if (this.fallen && able) {
+      if (!this.rising) {
+        this.downTime += dt;
+        if (this.downTime > 1.6 && pel.velocity.length() < 0.6) { this.rising = true; this.riseT = 0; this.rises++; }
+      } else {
+        this.riseT += dt;
+        this.crouch = Math.max(0, 1 - this.riseT / 1.6);
+        if (this.riseT > 5) { this.rising = false; this.downTime = 0; }
+      }
+    } else this.rising = false;
     if (this.alive) {
       if (this.bloodLost > NPC_BLOOD) this.kill('blood loss');
       else if (this.dieAt && simTime >= this.dieAt) this.kill('heart');
@@ -3242,7 +3375,7 @@ class RagdollNPC {
     else {
       const vit = Math.max(0.25, 1 - this.bloodLost / (NPC_BLOOD * 1.4));
       const heart = this.dieAt ? Math.max(0.2, (this.dieAt - simTime) / 3) : 1;   // heart shot: fading out
-      target = vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen ? 0.35 : 1);
+      target = vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen && !this.rising ? 0.35 : 1);
     }
     this.tone += (target - this.tone) * Math.min(1, dt * (this.alive ? 6 : this.cause === 'brain' ? 40 : 4));
     // look at the player while alive
@@ -3304,7 +3437,8 @@ class RagdollNPC {
     }
   }
 }
-const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3();
+const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3(), _ngv = new CANNON.Vec3(), _ngr = new CANNON.Vec3(), _nsF = new CANNON.Vec3();
+const _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
 const shoeMat = new THREE.MeshStandardMaterial({ color: '#25272a', roughness: 0.75 });
 function RoundedShoe([hx, hy, hz]) {   // a box with the toe rounded off
   const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2, 2, 1, 4), a = g.attributes.position;
