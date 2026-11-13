@@ -365,7 +365,7 @@ for (const [x, z] of [[-12, 8], [-14, -4], [14, 8], [16, -12], [-16, -16], [6, -
 // ---------- player body ----------
 const player = new CANNON.Body({
   mass: 70, material: matPlayer, fixedRotation: true, linearDamping: 0,
-  collisionFilterGroup: G.PLAYER, collisionFilterMask: G.STATIC | G.DYN | G.NPC,
+  collisionFilterGroup: G.PLAYER, collisionFilterMask: G.STATIC | G.DYN,
 });
 player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, PR, 0));
 player.addShape(new CANNON.Sphere(PR), new CANNON.Vec3(0, 0.9, 0));
@@ -626,6 +626,11 @@ class PhysHand {
            dy * HAND_K + (tvy - b.velocity.y) * HAND_C,
            dz * HAND_K + (tvz - b.velocity.z) * HAND_C);
     clampLen(_f, HAND_FMAX);
+    if (touchingNPC(b)) {
+      const swing = Math.min(1, this.ctrlVel.length() / 2.2);
+      _f.scale(0.15 + 0.55 * swing, _f);
+      clampLen(_f, NPC_TOUCH_F + NPC_SHOVE_F * swing);
+    }
     const carry = b.mass * GRAVITY;
     b.force.x += _f.x; b.force.y += _f.y + carry; b.force.z += _f.z;
     player.force.x -= _f.x; player.force.y -= _f.y + carry; player.force.z -= _f.z;
@@ -716,6 +721,14 @@ class PhysHand {
   }
 }
 const _f = new CANNON.Vec3();
+const NPC_TOUCH_F = 35, NPC_SHOVE_F = 360;   // N: a resting hand vs a fast shove
+function touchingNPC(b) {
+  for (const c of world.contacts) {
+    const o = c.bi === b ? c.bj : c.bj === b ? c.bi : null;
+    if (o && (o.collisionFilterGroup & G.NPC)) return true;
+  }
+  return false;
+}
 function clampLen(v, max) { const l = v.length(); if (l > max) v.scale(max / l, v); }
 const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const hands = {};
@@ -2922,7 +2935,8 @@ function updateDamageTargets() {}
 // Every part except the feet carries a DamageVolume with skin, muscle, bone and organs.
 const matNPC = new CANNON.Material('npc');
 world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matWorld, { friction: 0.9, restitution: 0 }));
-const NPC_MASK = G.STATIC | G.DYN | G.PLAYER | G.HAND | G.GUN;
+world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matHand, { friction: 0.8, restitution: 0, contactEquationStiffness: 20000, contactEquationRelaxation: 6 }));
+const NPC_MASK = G.STATIC | G.DYN | G.HAND | G.GUN;   // the player's body meets it through leanOn(), not solid contact
 const NPC_BLOOD = 320;          // blood loss (integrated wound bleeding) that kills
 
 const _Y = new THREE.Vector3(0, 1, 0);
@@ -3114,7 +3128,7 @@ class RagdollNPC {
     this.parts = {}; this.list = []; this.drives = []; this.guts = [];
     this.footRay = new CANNON.RaycastResult();
     // balance: spring-damper torques (N·m per rad, N·m·s per rad) per planted foot, and their cap
-    this.tune = { kpP: 250, kdP: 12, cap: 70, capture: 0.32, fwd: 0.12, back: 0.08, side: 0.15, swingK: 1400, swingC: 80, swingMax: 380 };
+    this.tune = { kpP: 250, kdP: 12, cap: 70, capture: 0.3, fwd: 0.14, back: 0.1, side: 0.17, swingK: 1800, swingC: 85, swingMax: 450, swingSoft: 0.2, leanGain: 6, leanLeak: 0.5, leanMax: 0.6 };
     for (const def of npcDefs()) this.addPart(def);
     for (const [pa, ch, pv, type, axis, limit, torque, pose] of npcJoints()) this.addJoint(pa, ch, pv, type, axis, limit, torque, pose);
     this.reset();
@@ -3175,7 +3189,7 @@ class RagdollNPC {
     this.alive = true; this.cause = null; this.dieAt = 0; this.bloodLost = 0;
     this.tone = 1; this.flinch = 0; this.fallen = false; this.airTime = 0; this.legWeak = { L: 1, R: 1 };
     this.spill = null; this.hits = 0;
-    this.step = null; this.stepCool = 0; this.steps = 0;
+    this.step = null; this.stepCool = 0; this.steps = 0; this.outFor = 0; this.lean = { x: 0, z: 0 };
     this.rising = false; this.riseT = 0; this.downTime = 0; this.rises = 0; this.crouch = 0;
     this.sync();
   }
@@ -3187,19 +3201,52 @@ class RagdollNPC {
       { collisionFilterMask: G.STATIC | G.DYN, skipBackfaces: true }, this.footRay);
   }
   // runs every physics step, before world.step
+  // Your body against theirs: in VR you can't feel your own body, so bumping into the NPC only nudges
+  // it (a capped push, equal and opposite on you) and stops you walking through it. Shoving is done
+  // with your hands.
+  leanOn(h) {
+    const pp = player.position;
+    for (const name of ['chest', 'abdomen', 'pelvis', 'head']) {
+      const b = this.parts[name].body;
+      if (b.position.y < pp.y - 0.1 || b.position.y > pp.y + 1.8) continue;
+      const dx = b.position.x - pp.x, dz = b.position.z - pp.z, d = Math.hypot(dx, dz), R = name === 'head' ? 0.32 : 0.45;
+      if (d >= R || d < 1e-4) continue;
+      const nx = dx / d, nz = dz / d, o = R - d;
+      const vn = (player.velocity.x - b.velocity.x) * nx + (player.velocity.z - b.velocity.z) * nz;
+      const F = Math.min(50, 500 * o + Math.max(0, vn) * 30);
+      b.applyForce(_nsF.set(nx * F, 0, nz * F), _ngr.set(0, 0, 0));
+    }
+  }
+  blockPlayer() {   // after the physics step: you can't walk through them
+    const pp = player.position;
+    for (const name of ['chest', 'abdomen', 'pelvis']) {
+      const b = this.parts[name].body;
+      if (b.position.y < pp.y - 0.1 || b.position.y > pp.y + 1.8) continue;
+      const dx = b.position.x - pp.x, dz = b.position.z - pp.z, d = Math.hypot(dx, dz), R = 0.42;
+      if (d >= R || d < 1e-4) continue;
+      const nx = dx / d, nz = dz / d, o = R - d;
+      pp.x -= nx * o; pp.z -= nz * o;
+      const vn = player.velocity.x * nx + player.velocity.z * nz;
+      if (vn > 0) { player.velocity.x -= nx * vn; player.velocity.z -= nz * vn; }
+    }
+  }
   drive(h) {
     const pel = this.parts.pelvis.body;
+    if (this.alive || this.fallen) this.leanOn(h);
     const stand = this.alive && !this.fallen && this.tone > 0.15;
     this.planted = { L: stand && this.grounded(this.parts.shinL), R: stand && this.grounded(this.parts.shinR) };
     if (stand) this.balanceStep(h); else this.step = null;
     if (this.step) this.planted[this.step.S] = false;
     const sw = this.step, swS = sw ? Math.sin(Math.PI * Math.min(1, sw.t / sw.dur)) : 0;
     const crouch = this.rising ? this.crouch : 0;
+    // lean, in the hips' own frame: bend at the hips to put weight into the push
+    const fw = this.frame(pel), lf = this.lean.x * fw.x + this.lean.z * fw.z, ls = this.lean.x * _nsl.x + this.lean.z * _nsl.z;
+    _hipLean.setFromEuler(_eul.set(lf, 0, -ls));
     for (const d of this.drives) {
       let torque = d.torque * this.tone * (d.leg ? this.legWeak[d.leg] : 1);
       d.target.copy(d.pose);
       if (d.leg && sw && d.leg === sw.S) {   // swing leg: soft, knee and hip bend to clear the ground
-        torque *= 0.35;
+        torque *= this.tune.swingSoft;
         d.pose2 = (d.name.startsWith('shin') ? 1.0 : -0.55) * swS;
       } else if (d.leg && crouch) {           // getting up: start in a crouch, straighten as the hips rise
         d.pose2 = (d.name.startsWith('shin') ? 1.6 : -1.2) * crouch;
@@ -3213,11 +3260,14 @@ class RagdollNPC {
         else if (this.alive) d.target.setFromAxisAngle(_X1, Math.max(lo, Math.min(hi, 2 * Math.atan2(d.pose.x, d.pose.w) + d.pose2)));
         else d.target.setFromAxisAngle(_X1, ang);
       } else if (d.pose2) d.target.multiply(_nq.setFromAxisAngle(_X1, d.pose2));
+      if (stand && !(sw && d.leg === sw.S) && d.name.startsWith('thigh')) d.target.multiply(_hipLean);
       if (torque < 0.5) d.m.off();
       else d.m.aim(_nq3.multiply(d.target), torque, h);
     }
     // balance: upright shins and pelvis, pushing against whichever feet are planted
     const yawQ = this.heading(pel, _nq3), tu = this.tune;
+    const lx = this.lean.x, lz = this.lean.z, ll = Math.hypot(lx, lz);
+    if (ll > 1e-4) yawQ.premultiply(_rq.setFromAxisAngle(_ns1.set(lz / ll, 0, -lx / ll), ll));
     for (const S of ['L', 'R']) {
       if (!this.planted[S]) continue;
       const k = this.tone * this.legWeak[S];
@@ -3250,6 +3300,16 @@ class RagdollNPC {
     this.massCenter(_ncm, _ncv);
     const cpx = _ncm.x + _ncv.x * this.tune.capture, cpz = _ncm.z + _ncv.z * this.tune.capture;   // capture point
     this.cp = [cpx, cpz];
+    // lean into a steady push: if the body keeps drifting off the middle of the feet, slowly tilt the
+    // balance target the other way (an integral term), and let it relax when the push goes away
+    if (!this.step && (this.planted.L || this.planted.R)) {
+      const sa = this.shoe('L', _ns1), sb = this.shoe('R', _ns2);
+      const fw = this.frame(pel), mx = (sa.x + sb.x) / 2 - fw.x * 0.03, mz = (sa.z + sb.z) / 2 - fw.z * 0.03;
+      const tu = this.tune;
+      this.lean.x += ((mx - _ncm.x) * tu.leanGain - this.lean.x * tu.leanLeak) * h;
+      this.lean.z += ((mz - _ncm.z) * tu.leanGain - this.lean.z * tu.leanLeak) * h;
+      const l = Math.hypot(this.lean.x, this.lean.z); if (l > tu.leanMax) { this.lean.x *= tu.leanMax / l; this.lean.z *= tu.leanMax / l; }
+    }
     if (!this.step) {
       this.stepCool -= h;
       if (this.stepCool > 0 || !(this.planted.L || this.planted.R)) return;
@@ -3260,7 +3320,8 @@ class RagdollNPC {
       const f = this.frame(pel), dx = cpx - cx, dz = cpz - cz;
       const df = dx * f.x + dz * f.z, dl = dx * _nsl.x + dz * _nsl.z;
       const tu = this.tune;
-      if (df < tu.fwd && df > -tu.back && Math.abs(dl) < tu.side) return;   // still over the feet
+      if (df < tu.fwd && df > -tu.back && Math.abs(dl) < tu.side) { this.outFor = 0; return; }   // still over the feet
+      if (++this.outFor < 4) return;                                        // a moment's wobble isn't worth a step
       let S;
       if (Math.abs(dl) > 0.07) S = dl > 0 ? 'L' : 'R';                      // falling sideways: that side's foot
       else S = Math.hypot(cpx - sL.x, cpz - sL.z) > Math.hypot(cpx - sR.x, cpz - sR.z) ? 'L' : 'R';
@@ -3337,6 +3398,7 @@ class RagdollNPC {
     return out.setFromAxisAngle(_Y, Math.atan2(f.x, f.z));
   }
   sync() {
+    if (this.alive || this.fallen) this.blockPlayer();
     for (const p of this.list) {
       const o = p.vol ? p.vol.object : p.mesh;
       o.position.copy(p.body.position); o.quaternion.copy(p.body.quaternion);
@@ -3438,7 +3500,7 @@ class RagdollNPC {
   }
 }
 const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3(), _ngv = new CANNON.Vec3(), _ngr = new CANNON.Vec3(), _nsF = new CANNON.Vec3();
-const _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
+const _hipLean = new THREE.Quaternion(), _eul = new THREE.Euler(), _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
 const shoeMat = new THREE.MeshStandardMaterial({ color: '#25272a', roughness: 0.75 });
 function RoundedShoe([hx, hy, hz]) {   // a box with the toe rounded off
   const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2, 2, 1, 4), a = g.attributes.position;
