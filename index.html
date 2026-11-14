@@ -105,6 +105,7 @@
       <dt>Damage</dt><dd>Skin, muscle, bone and organs in every part. A brain or heart hit is fatal (the heart takes a few seconds); heavy bleeding kills too; leg hits make it buckle</dd>
       <dt>Blood</dt><dd>The tag over his head shows his blood volume. He goes paler as he loses it, presses a hand on his worst wound (which slows it), passes out below 60% and dies at 45%</dd>
       <dt>Dismemberment</dt><dd>Shoot a limb or the body clean through and the two parts separate. He can live through losing an arm or a leg; not a torso split or his head</dd>
+      <dt>Machete</dt><dd>On the pistol bench. Chop and the edge cuts into the flesh until it slows to a stop and sticks; pull it back out, or drive it on harder to keep cutting. Bone stops it. Cut through a limb and it comes off</dd>
       <dt>Organs</dt><dd>Open the belly wide enough (shotgun, or several hits close together) and the intestines spill out. You can grab them</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
       <dt>Desktop</dt><dd>F fire · E rack / pump · Q drop mag · X ammo from pouch · Z load ammo from other hand</dd>
@@ -724,12 +725,8 @@ class PhysHand {
 }
 const _f = new CANNON.Vec3();
 const NPC_TOUCH_F = 35, NPC_SHOVE_F = 360;   // N: a resting hand vs a fast shove
-function touchingNPC(b) {
-  for (const c of world.contacts) {
-    const o = c.bi === b ? c.bj : c.bj === b ? c.bi : null;
-    if (o && (o.collisionFilterGroup & G.NPC)) return true;
-  }
-  return false;
+function touchingNPC(b) {   // a hand pressing on flesh (set by the mesh contacts each step)
+  return (hands.left.body === b && hands.left.meshTouch) || (hands.right.body === b && hands.right.meshTouch);
 }
 function clampLen(v, max) { const l = v.length(); if (l > max) v.scale(max / l, v); }
 const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -2114,7 +2111,7 @@ class AmmoPouch {
     return Math.hypot(hc.x - p.x, hc.y - p.y, hc.z - p.z) < 0.15;
   }
   gunFor(hand) {
-    for (const g of guns) if (g.holder && g.holder !== hand) return g;
+    for (const g of guns) if (g.holder && g.holder !== hand && !(g instanceof Machete)) return g;
     return null;
   }
   tryGrab(hand, force = false) {
@@ -2941,34 +2938,104 @@ function addToPool(p, n, amount) {
   }
   drawPool(pl);
 }
-// things dragged through pools carry blood off and smear it behind them
+// Smears: a streak texture laid along the path a bloody body slides over a surface it is actually
+// touching (from the physics contacts), so nothing is ever smeared in mid-air.
+const SMEARS_MAX = 1500;
+const smearTex = (() => {
+  const W = 512, cv = document.createElement('canvas'); cv.width = cv.height = W;
+  const g = cv.getContext('2d');
+  for (let v = 0; v < 4; v++) {
+    const ox = (v % 2) * 256, oy = ((v / 2) | 0) * 256;
+    g.save(); g.translate(ox, oy);
+    // a band that thins out at both ends, made of drag lines of varying darkness
+    for (let i = 0; i < 70; i++) {
+      const y = 128 + (Math.random() - 0.5) * 150 * (0.4 + Math.random() * 0.6);
+      const x0 = 8 + Math.random() * 40, x1 = 248 - Math.random() * 40, w = 2 + Math.random() * 9;
+      const grd = g.createLinearGradient(x0, 0, x1, 0);
+      const a = 0.25 + Math.random() * 0.55;
+      grd.addColorStop(0, 'rgba(90,8,5,0)'); grd.addColorStop(0.15, `rgba(${80 + Math.random() * 30 | 0},7,5,${a})`);
+      grd.addColorStop(0.8, `rgba(70,6,4,${a * 0.8})`); grd.addColorStop(1, 'rgba(60,5,3,0)');
+      g.strokeStyle = grd; g.lineWidth = w; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(x0, y); g.bezierCurveTo(x0 + 70, y + (Math.random() - 0.5) * 8, x1 - 70, y + (Math.random() - 0.5) * 8, x1, y + (Math.random() - 0.5) * 6); g.stroke();
+    }
+    g.restore();
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+})();
+const smearGeo = new THREE.PlaneGeometry(1, 1);
+const smearUv = new THREE.InstancedBufferAttribute(new Float32Array(SMEARS_MAX * 2), 2), smearFade = new THREE.InstancedBufferAttribute(new Float32Array(SMEARS_MAX), 1);
+const smearBorn = new Float32Array(SMEARS_MAX), smearAlpha = new Float32Array(SMEARS_MAX);
+smearGeo.setAttribute('uvOff', smearUv); smearGeo.setAttribute('fade', smearFade);
+const smearMat = new THREE.MeshStandardMaterial({ map: smearTex, transparent: true, alphaTest: 0.04, depthWrite: false,
+  roughness: 0.18, metalness: 0, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+smearMat.onBeforeCompile = splatMat.onBeforeCompile;
+const smearMesh = new THREE.InstancedMesh(smearGeo, smearMat, SMEARS_MAX);
+smearMesh.count = 0; smearMesh.frustumCulled = false; smearMesh.receiveShadow = true;
+scene.add(smearMesh);
+let smearNext = 0;
+const _sx = new THREE.Vector3(), _sy = new THREE.Vector3(), _smm = new THREE.Matrix4();
+function addSmear(p0, p1, n, width, alpha) {
+  _sx.copy(p1).sub(p0); _sx.addScaledVector(n, -_sx.dot(n));
+  const len = _sx.length(); if (len < 1e-4) return;
+  _sx.divideScalar(len); _sy.crossVectors(n, _sx);
+  _smm.makeBasis(_sx, _sy, n);
+  _smm.scale(_bs.set(len + width * 0.7, width, 1));
+  _smm.setPosition(_bp.copy(p0).add(p1).multiplyScalar(0.5).addScaledVector(n, 0.0011 + (smearNext % 16) * 0.00004));
+  smearMesh.setMatrixAt(smearNext, _smm);
+  const v = (Math.random() * 4) | 0;
+  smearUv.setXY(smearNext, (v % 2) * 0.5, 0.5 - ((v / 2) | 0) * 0.5);
+  smearAlpha[smearNext] = Math.min(1, alpha); smearFade.setX(smearNext, smearAlpha[smearNext]); smearBorn[smearNext] = simTime;
+  smearNext = (smearNext + 1) % SMEARS_MAX;
+  smearMesh.count = Math.max(smearMesh.count, smearNext === 0 ? SMEARS_MAX : smearNext);
+  smearMesh.instanceMatrix.needsUpdate = smearUv.needsUpdate = smearFade.needsUpdate = true;
+}
+// where is each body touching something solid and still? (ground, walls, props at rest)
+const surfaceContacts = new Map();
+function gatherSurfaceContacts() {
+  surfaceContacts.clear();
+  for (const c of world.contacts) {
+    let body, sp, n;
+    if (c.bj.mass === 0 && c.bi.mass > 0) { body = c.bi; sp = c.bj.position.vadd(c.rj); n = c.ni.negate(); }
+    else if (c.bi.mass === 0 && c.bj.mass > 0) { body = c.bj; sp = c.bi.position.vadd(c.ri); n = c.ni.clone(); }
+    else continue;
+    const prev = surfaceContacts.get(body);
+    if (!prev || sp.y < prev.p.y) surfaceContacts.set(body, { p: new THREE.Vector3(sp.x, sp.y, sp.z), n: new THREE.Vector3(n.x, n.y, n.z) });
+  }
+}
 const carriers = new WeakMap();
 let footCarry = 0, footDist = 0, footSide = 1, poolClock = 0;
 function updateBloodDrag(dt) {
+  gatherSurfaceContacts();
   const bodies = [];
   if (typeof npc !== 'undefined') { for (const p of npc.list) bodies.push(p); for (const pc of npc.pieces) bodies.push(pc); for (const g of npc.guts) for (const nd of g.nodes) bodies.push(nd); }
   for (const c of chunks) bodies.push(c);
   for (const e of bodies) {
-    const b = e.body, low = b.aabb.lowerBound.y, sp = Math.hypot(b.velocity.x, b.velocity.z);
-    let st = carriers.get(b); if (!st) { st = { carry: 0, acc: 0, paint: 0 }; carriers.set(b, st); }
-    const pl = poolAt(b.position.x, low, b.position.z, 0.04);
-    if (pl && low - pl.p.y < 0.06) {
+    const b = e.body, sp = Math.hypot(b.velocity.x, b.velocity.z);
+    let st = carriers.get(b); if (!st) { st = { carry: 0, last: null, paint: 0 }; carriers.set(b, st); }
+    const ct = surfaceContacts.get(b);
+    if (!ct) { st.last = null; continue; }                 // not touching anything: nothing to smear on
+    const cp = ct.p;
+    const pl = ct.n.y > 0.7 ? poolAt(cp.x, cp.y, cp.z, 0.03) : null;
+    if (pl) {
       if (sp > 0.03) { const take = Math.min(pl.vol * 0.05, pl.vol * 2 * dt * sp + 0.02); pl.vol -= take; st.carry = Math.min(40, st.carry + take); pl.r = poolRadius(pl.vol); drawPool(pl); }
       st.paint -= dt;
-      if (e.vol && st.paint <= 0) {   // lying in it stains the skin
+      if (e.vol && st.paint <= 0) {   // lying in it stains the skin where it touches
         st.paint = 0.25;
         e.vol.object.updateWorldMatrix(true, false);
-        const local = _v3.set(b.position.x, low + 0.01, b.position.z).applyMatrix4(_dmgInv.copy(e.vol.object.matrixWorld).invert());
+        const local = _v3.copy(cp).applyMatrix4(_dmgInv.copy(e.vol.object.matrixWorld).invert());
         e.vol.paintBlood(local, 0.05, 0.35);
       }
-    } else if (st.carry > 0.15 && sp > 0.2 && low < 0.25) {
-      st.acc += sp * dt;
-      if (st.acc > 0.09) {
-        st.acc = 0;
-        const amt = st.carry * 0.22; st.carry -= amt;
-        addSplat(_v3.set(b.position.x, low + 0.001, b.position.z), _v4.set(0, 1, 0), 0.03 + 0.012 * Math.sqrt(amt), _v1.set(b.velocity.x * 6, 0, b.velocity.z * 6));
-      }
     }
+    if (st.carry > 0.1 && sp > 0.08) {
+      if (!st.last) st.last = cp.clone();
+      const d = st.last.distanceTo(cp);
+      if (d > 0.035) {
+        const width = e.radius ? Math.min(0.12, e.radius * 2) : e.half ? Math.min(0.12, Math.min(e.half.x, e.half.z) * 2.2) : 0.09;
+        addSmear(st.last, cp, ct.n, width, 0.35 + st.carry * 0.08);
+        st.carry *= Math.exp(-d * 5);                       // blood runs out over ~20 cm of dragging
+        st.last.copy(cp);
+      }
+    } else st.last = cp.clone();
   }
   // your feet
   if (grounded) {
@@ -2992,6 +3059,12 @@ function updateBloodDrag(dt) {
       const pl = pools[i];
       if (pl.vol < 0.3 || drawPool(pl) <= 0.001) removePool(pl);
     }
+    let sany = false;
+    for (let i = 0; i < smearMesh.count; i++) {
+      const f = smearAlpha[i] * (1 - THREE.MathUtils.smoothstep(simTime - smearBorn[i], 150, 240));
+      if (Math.abs(f - smearFade.getX(i)) > 0.02) { smearFade.setX(i, f); sany = true; }
+    }
+    if (sany) smearFade.needsUpdate = true;
     let any = false;
     for (let i = 0; i < splatMesh.count; i++) {
       const f = 1 - THREE.MathUtils.smoothstep(simTime - splatBorn[i], 150, 240);
@@ -3084,6 +3157,7 @@ function clearBlood() {
   drops.length = 0; dropGeo.setDrawRange(0, 0);
   splatMesh.count = 0; splatNext = 0;
   while (pools.length) removePool(pools[pools.length - 1]);
+  smearMesh.count = 0; smearNext = 0;
   poolCells.clear(); footCarry = 0;
   while (chunks.length) removeChunk(chunks[0]);
 }
@@ -3147,7 +3221,7 @@ function updateDamageTargets() {}
 const matNPC = new CANNON.Material('npc');
 world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matWorld, { friction: 0.9, restitution: 0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(matNPC, matHand, { friction: 0.8, restitution: 0, contactEquationStiffness: 20000, contactEquationRelaxation: 6 }));
-const NPC_MASK = G.STATIC | G.DYN | G.HAND | G.GUN;   // the player's body meets it through leanOn(), not solid contact
+const NPC_MASK = G.STATIC | G.DYN | G.GUN;   // hands meet it through its flesh (meshStep), the player through leanOn()   // the player's body meets it through leanOn(), not solid contact
 // Blood: wound bleeding is integrated into units lost; NPC_BLOOD_TOTAL is the whole blood volume.
 // Pale from ~10% lost, weak and slumping, unconscious at 40% (haemorrhagic shock), dead at 55%.
 const NPC_BLOOD_TOTAL = 600, NPC_FAINT = 0.4, NPC_BLOOD = NPC_BLOOD_TOTAL * 0.55;
@@ -4177,6 +4251,437 @@ class Guts {
 
 const npc = new RagdollNPC(-7.8, 3.4, Math.PI / 2);   // in the lane by the shotgun bench, facing the benches
 
+// ---------- mesh contacts ----------
+// Hands and blades meet flesh through the flesh itself (the damage volumes' distance fields), not the
+// NPC's box colliders: a hand presses on the actual, damaged surface and can reach into a wound.
+const _mcL = new THREE.Vector3(), _mcN = new THREE.Vector3(), _mcW = new THREE.Vector3(), _mcInv = new THREE.Matrix4();
+const _mcF = new CANNON.Vec3(), _mcR = new CANNON.Vec3(), _mcP = new CANNON.Vec3(), _mcV = new CANNON.Vec3();
+function fleshVolumesNear(p, r) {   // damage volumes whose bounding sphere reaches within r of p
+  const out = [];
+  for (const v of damageables) {
+    const c = _mcW.copy(v.bc).applyMatrix4(v.object.matrixWorld);
+    if (c.distanceTo(p) < v.br + r) out.push(v);
+  }
+  return out;
+}
+function localOf(v, wp, out) { return out.copy(wp).applyMatrix4(_mcInv.copy(v.object.matrixWorld).invert()); }
+// penalty contact of a sample point against flesh: returns depth (0 if outside)
+function fleshPush(v, wp, out) {
+  localOf(v, wp, _mcL);
+  const f = v.sample(_mcL.x, _mcL.y, _mcL.z);
+  if (f >= 0) return 0;
+  v.gradient(_mcL, _mcN).transformDirection(v.object.matrixWorld);
+  out.copy(_mcN);
+  return -f;
+}
+const HAND_PTS = [];
+function handSamplePoints(hand) {
+  const sh = hand.body.shapes[0], o = hand.body.shapeOffsets[0], hx = sh.halfExtents;
+  const pts = [new CANNON.Vec3(o.x, o.y, o.z)];
+  for (const sx of [-0.8, 0.8]) for (const sy of [-0.8, 0.8]) for (const sz of [-0.8, 0.8]) pts.push(new CANNON.Vec3(o.x + sx * hx.x, o.y + sy * hx.y, o.z + sz * hx.z));
+  return pts;
+}
+function handMeshContacts(hand, h) {
+  hand.meshTouch = false;
+  if (!hand.active || hand.anchored || gunHeldBy(hand)) return;
+  const b = hand.body;
+  hand._pts ??= handSamplePoints(hand);
+  const near = fleshVolumesNear(b.position, 0.15);
+  if (!near.length) return;
+  for (const lp of hand._pts) {
+    b.pointToWorldFrame(lp, _mcP);
+    const wp = _mcW.set(_mcP.x, _mcP.y, _mcP.z);
+    for (const v of near) {
+      const d = fleshPush(v, wp, _mcN);
+      if (!d) continue;
+      hand.meshTouch = true;
+      b.getVelocityAtWorldPoint(_mcP, _mcV);
+      const other = v.body;
+      let vn = _mcV.x * _mcN.x + _mcV.y * _mcN.y + _mcV.z * _mcN.z;
+      if (other) { const ov = other.getVelocityAtWorldPoint(_mcP, _mcR); vn -= ov.x * _mcN.x + ov.y * _mcN.y + ov.z * _mcN.z; }
+      const F = Math.min(260, Math.max(0, 2600 * d - 45 * vn)) / hand._pts.length * 3;
+      _mcF.set(_mcN.x * F, _mcN.y * F, _mcN.z * F);
+      b.applyForce(_mcF, _mcR.set(_mcP.x - b.position.x, _mcP.y - b.position.y, _mcP.z - b.position.z));
+      if (other && other.mass > 0) other.applyForce(_mcF.negate(_mcF), _mcR.set(_mcP.x - other.position.x, _mcP.y - other.position.y, _mcP.z - other.position.z));
+      break;
+    }
+  }
+}
+
+// ---------- machete ----------
+// Machete space: blade along -Z, edge down (-Y), spine up, handle along +Z. Held like the pistol, by the
+// handle. Along the edge are sample points: an edge point moving edge-first into flesh cuts a slot as it
+// goes (carving the volume) and is resisted, a lot more by bone; the blade can't slide sideways in its
+// own slot. Swing hard and it cuts until it has slowed to a stop, then it sticks: pull it back out, or
+// drive it on hard enough and it keeps cutting. Cut a limb all the way through and it comes off.
+const MCH = {
+  GRIP: new THREE.Vector3(0, 0, 0.065), RAKE: 30 * DEG,
+  BLADE0: -0.03, BLADE1: -0.47, EDGE_Y: -0.026, SPINE_Y: 0.02, N: 15,
+  R_FLESH: 62, R_BONE: 520, C_LAT: 85, C_ALONG: 15, C_PULL: 18, R_STAB: 90, R_SLIDE: 14,   // resistance per sample point (N, N·s/m)
+  ARM_F: 400, STICK_V: 0.3, PULL_OUT: 70,
+};
+const MCH_ATTACH_Q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+  new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, Math.sin(MCH.RAKE), Math.cos(MCH.RAKE)), new THREE.Vector3(0, -Math.cos(MCH.RAKE), Math.sin(MCH.RAKE)))).invert();
+const MCH_ATTACH_P = MCH.GRIP.clone().applyQuaternion(MCH_ATTACH_Q).negate();
+function buildMacheteMesh() {
+  const g = new THREE.Group();
+  const steel = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.8, 0.8, 0.8), metalness: 1, roughness: 0.42, flatShading: true });
+  const edgeM = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.95, 0.95, 0.95), metalness: 1, roughness: 0.25, flatShading: true });
+  const black = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.012, 0.012, 0.012), roughness: 0.6, flatShading: true });
+  const wood = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.0397, 0.0227, 0.0019), roughness: 0.5, flatShading: true });
+  // blade profile in the Y/Z plane: straight spine, a belly that widens toward the tip, clipped point
+  const sh = new THREE.Shape();
+  sh.moveTo(-0.03, MCH.SPINE_Y);
+  sh.lineTo(-0.40, MCH.SPINE_Y + 0.004); sh.lineTo(-0.47, MCH.SPINE_Y - 0.012); sh.lineTo(-0.465, -0.02);
+  sh.quadraticCurveTo(-0.30, MCH.EDGE_Y - 0.012, -0.03, MCH.EDGE_Y + 0.004); sh.lineTo(-0.03, MCH.SPINE_Y);
+  const blade = new THREE.ExtrudeGeometry(sh, { depth: 0.004, bevelEnabled: true, bevelThickness: 0.0015, bevelSize: 0.0012, bevelSegments: 1, steps: 1 });
+  // the shape is drawn in X/Y with X as length: turn it so length runs along Z
+  blade.rotateY(Math.PI / 2); blade.translate(0.002, 0, 0);
+  const bm = new THREE.Mesh(blade, steel); g.add(bm);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(0.0022, 0.004, 0.40), edgeM); edge.position.set(0, MCH.EDGE_Y + 0.003, -0.24); edge.rotation.x = -0.02; g.add(edge);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.06, 0.012), black); guard.position.set(0, -0.003, -0.024); g.add(guard);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.034, 0.13), wood); handle.position.set(0, -0.002, 0.048); g.add(handle);
+  for (const z of [0.01, 0.048, 0.086]) { const r = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.03, 8), steel); r.rotation.z = Math.PI / 2; r.position.set(0, -0.002, z); g.add(r); }
+  const pommel = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.012), black); pommel.position.set(0, -0.004, 0.118); g.add(pommel);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+const _mt1 = new THREE.Vector3(), _mt2 = new THREE.Vector3(), _mt3 = new THREE.Vector3(), _mtq = new THREE.Quaternion();
+class Machete {
+  constructor() {
+    this.group = buildMacheteMesh(); scene.add(this.group);
+    this.attachQ = MCH_ATTACH_Q; this.attachP = MCH_ATTACH_P; this.attachInv = MCH_ATTACH_Q.clone().invert();
+    this.body = new CANNON.Body({ mass: 0.7, material: matWorld, linearDamping: 0.05, angularDamping: 0.1,
+      collisionFilterGroup: G.GUN, collisionFilterMask: G.STATIC | G.DYN | G.HAND });   // flesh is handled by the blade sampling
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.008, 0.024, 0.22)), new CANNON.Vec3(0, -0.003, -0.25));
+    this.body.addShape(new CANNON.Box(new CANNON.Vec3(0.015, 0.02, 0.07)), new CANNON.Vec3(0, -0.002, 0.05));
+    world.addBody(this.body);
+    this.body.addEventListener('collide', (e) => {
+      const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+      if (v > 1.2) playAt(syn.tink[1], this.body.position, { gain: Math.min(0.6, v * 0.08), rate: 0.6 });
+    });
+    this.edge = []; this.spine = [];
+    for (let i = 0; i < MCH.N; i++) {
+      const z = MCH.BLADE0 + (MCH.BLADE1 - MCH.BLADE0) * (i + 0.5) / MCH.N;
+      this.edge.push({ l: new CANNON.Vec3(0, MCH.EDGE_Y, z), prevW: null, inside: false });
+      this.spine.push({ l: new CANNON.Vec3(0, MCH.SPINE_Y, z) });
+    }
+    this.holes = []; this.holder = null; this.slideHand = null;
+    this.reset();
+  }
+  reset() {
+    if (this.holder) this.drop();
+    this.unstick();
+    this.body.type = CANNON.Body.DYNAMIC;
+    this.body.position.set(-4.2, 0.92, 1.95);
+    this.body.quaternion.setFromEuler(0, 0, Math.PI / 2);
+    this.body.velocity.setZero(); this.body.angularVelocity.setZero();
+    for (const e of this.edge) { e.prevW = null; e.inside = false; }
+    this.slots = new Map(); this.cutting = 0; this.trigger = 0;
+  }
+  get ammoText() { return this.stuck ? 'stuck' : '—'; }
+  setTrigger() {}
+  spawnAmmo() { return null; }
+  toWorld(v, out = new THREE.Vector3()) { _cv.set(v.x, v.y, v.z); this.body.pointToWorldFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z); }
+  tryGrab(hand) {
+    if (this.holder) return false;
+    const hc = hand.body.pointToWorldFrame(hand.body.shapeOffsets[0]);
+    if (_mt1.set(hc.x, hc.y, hc.z).distanceTo(this.toWorld(MCH.GRIP, _mt2)) > 0.13) return false;
+    this.attach(hand);
+    return true;
+  }
+  attach(hand) {
+    hand.release();
+    this.holder = hand;
+    hand.body.type = CANNON.Body.KINEMATIC;
+    hand.body.collisionFilterMask = 0;
+    if (!this.stuck) this.placeAtTarget(); else this.placeHand(hand.body);
+    hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.5, 40);
+  }
+  targetPose(outP, outQ) {
+    const h = this.holder;
+    outQ.copy(h.targetQuat).multiply(this.attachQ);
+    outP.copy(this.attachP).applyQuaternion(h.targetQuat).add(h.targetPos);
+  }
+  drop() {
+    const h = this.holder;
+    if (h) {
+      h.body.type = CANNON.Body.DYNAMIC;
+      h.body.collisionFilterMask = h.active ? (G.STATIC | G.DYN | G.GUN | G.NPC | G.GUTS) : 0;
+      h.body.velocity.copy(this.body.velocity);
+    }
+    this.holder = null;
+  }
+  // stuck: held fast by the flesh it is buried in, moving with that body part
+  stick(v) {
+    if (this.stuck) return;
+    const other = v.body;
+    if (other && other.mass > 0) {
+      this.lock = new CANNON.LockConstraint(this.body, other, { maxForce: 4000 });
+      this.lock.collideConnected = false;
+      world.addConstraint(this.lock);
+    } else { this.body.type = CANNON.Body.KINEMATIC; this.body.velocity.setZero(); this.body.angularVelocity.setZero(); }
+    this.stuck = v;
+    this.holder?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1, 60);
+  }
+  unstick() {
+    if (this.lock) { world.removeConstraint(this.lock); this.lock = null; }
+    if (this.stuck && this.body.type === CANNON.Body.KINEMATIC) this.body.type = CANNON.Body.DYNAMIC;
+    this.stuck = null;
+  }
+  // The blade against flesh, every physics step. Returns the resistance force (and adds the reaction to
+  // the flesh's body). Edge points that move edge-first through solid carve their path.
+  bladeForces(h) {
+    this.raw = null;
+    const b = this.body, m = b.mass;
+    const near = fleshVolumesNear(_mt1.set(b.position.x, b.position.y, b.position.z).add(this.dirW(0, 0, -0.25, _mt3)), 0.32);
+    this.cutting = 0; this.inFlesh = null;
+    if (!near.length) { for (const e of this.edge) { e.prevW = null; e.inside = false; } return; }
+    const cut = this.dirW(0, -1, 0, new THREE.Vector3()), lat = this.dirW(1, 0, 0, new THREE.Vector3()), along = this.dirW(0, 0, -1, new THREE.Vector3());
+    // raw resistance, summed: cutting (against the edge), sideways, along the blade, and blunt pushes
+    let Rc = 0, Cl = 0, Ca = 0, Cp = 0, nIn = 0;
+    const Fsum = new THREE.Vector3(), Tsum = new THREE.Vector3(), com = new THREE.Vector3(b.position.x, b.position.y, b.position.z);
+    const ov = this.otherBody, pv = new THREE.Vector3(), r = new THREE.Vector3(), Fi = new THREE.Vector3();
+    const pointVel = (wp) => {   // this point's velocity relative to the flesh, rotation included
+      r.copy(wp).sub(com);
+      pv.set(b.angularVelocity.y * r.z - b.angularVelocity.z * r.y, b.angularVelocity.z * r.x - b.angularVelocity.x * r.z, b.angularVelocity.x * r.y - b.angularVelocity.y * r.x);
+      pv.x += b.velocity.x - (ov ? ov.velocity.x : 0); pv.y += b.velocity.y - (ov ? ov.velocity.y : 0); pv.z += b.velocity.z - (ov ? ov.velocity.z : 0);
+      return pv;
+    };
+    const blunt = new THREE.Vector3();
+    let newEntry = null, hitBone = false, other = null;
+    const paths = [];
+    for (const [ei, e] of this.edge.entries()) {
+      b.pointToWorldFrame(e.l, _mcP);
+      const wp = new THREE.Vector3(_mcP.x, _mcP.y, _mcP.z), pw = e.prevW || wp;
+      // trace the path this point took this step, so a fast blade can't skip through thin flesh
+      let hit = null, local = null, f = 0;
+      const steps = Math.max(1, Math.ceil(pw.distanceTo(wp) / 0.015));
+      trace: for (let k = 1; k <= steps; k++) {
+        const q = pw.clone().lerp(wp, k / steps);
+        for (const v of near) {
+          const l = localOf(v, q, new THREE.Vector3());
+          if (v.sampleArr(v.base, l.x, l.y, l.z) >= 0) continue;
+          const fv = v.sample(l.x, l.y, l.z), slot = this.inSlot(v, l);
+          if ((fv < -v.h * 0.15 && !slot) || (fv < 0.02 && slot)) { hit = v; local = l; f = slot ? 0 : fv; break trace; }
+        }
+      }
+      e.prevW = wp.clone();
+      if (!hit) { e.inside = false; continue; }
+      this.inFlesh = hit; other = hit.body || other; nIn++;
+      const bone = hit.boneSdf && hit.boneSdf(local.x, local.y, local.z) < 0;
+      const vi = pointVel(wp), vc = vi.dot(cut), vli = vi.dot(lat), vai = vi.dot(along);
+      Fi.set(0, 0, 0);
+      if (vc > 0.02) Fi.addScaledVector(cut, -(bone ? MCH.R_BONE : MCH.R_FLESH));
+      else Fi.addScaledVector(cut, -vc * MCH.C_PULL);
+      Fi.addScaledVector(lat, -vli * MCH.C_LAT);
+      // along the blade: the point pushing into uncut flesh is a stab and is resisted like a cut; sliding
+      // within its own cut there's friction (enough to hold it still against a light push)
+      if (Math.abs(vai) > 0.01) Fi.addScaledVector(along, -Math.sign(vai) * (vai > 0 && f < 0 ? (bone ? MCH.R_BONE : MCH.R_STAB) : MCH.R_SLIDE));
+      Fsum.add(Fi); Tsum.add(r.clone().cross(Fi));
+      if (vai > 0.05 && f < 0 && !(vc > 0.02)) {         // tip first: stabbing carves its path too
+        const la = localOf(hit, pw, new THREE.Vector3()), lc = localOf(hit, wp, new THREE.Vector3());
+        if (la.distanceTo(lc) > 0.002) this.carveSlot(hit, la, lc);
+        if (!e.inside) newEntry = { v: hit, local: local.clone(), wp: wp.clone() };
+      }
+      if (vc > 0.02) {                                    // edge first: cutting
+        Rc += bone ? MCH.R_BONE : MCH.R_FLESH;
+        this.cutting++;
+        if (bone) hitBone = true;
+        if (!e.inside && f < 0) newEntry = { v: hit, local: local.clone(), wp: wp.clone() };
+        const la = localOf(hit, pw, new THREE.Vector3()), lc = localOf(hit, wp, new THREE.Vector3());
+        if (la.distanceTo(lc) > 0.002) { this.carveSlot(hit, la, lc); paths[ei] = { v: hit, a: la, c: lc }; }
+      } else Cp += MCH.C_PULL;
+      Cl += MCH.C_LAT; Ca += MCH.C_ALONG;
+      e.inside = true;
+    }
+    for (let i = 0; i + 1 < paths.length; i++) {
+      const p0 = paths[i], p1 = paths[i + 1];
+      if (!p0 || !p1 || p0.v !== p1.v) continue;
+      for (const t of [0.25, 0.5, 0.75]) this.carveSlot(p0.v, p0.a.clone().lerp(p1.a, t), p0.c.clone().lerp(p1.c, t), true);
+    }
+    // the spine and flat are blunt: they push on uncut flesh instead of cutting it
+    let nb = 0;
+    for (const sp of this.spine) {
+      b.pointToWorldFrame(sp.l, _mcP);
+      const wp = new THREE.Vector3(_mcP.x, _mcP.y, _mcP.z);
+      for (const v of near) {
+        const l = localOf(v, wp, new THREE.Vector3());
+        if (this.inSlot(v, l)) continue;
+        const d = fleshPush(v, wp, _mcN);
+        if (d < v.h * 0.3) continue;
+        blunt.add(_mcN); nb++; other = v.body || other;
+        break;
+      }
+    }
+    this.raw = { F: Fsum, T: Tsum, cut, lat, along, blunt: nb ? blunt.normalize() : null, nb };
+    this.otherBody = other;
+    if (newEntry) this.onEntry(newEntry, cut, hitBone);
+    else if (hitBone && !this.boneT) { this.boneT = 0.2; goreSound('bone', b.position, 0.8, { ref: 1.5 }); }
+    this.boneT = Math.max(0, (this.boneT || 0) - h);
+  }
+  // Flesh resistance, applied after the arm's push: it can stop the blade's motion (and its turning)
+  // but never reverse it, so a push weaker than the flesh just stalls - like friction - and the blade
+  // only goes further when driven harder than the flesh resists.
+  resist(h) {
+    const R = this.raw; if (!R || !this.inFlesh) return;
+    const b = this.body, m = b.mass, o = this.otherBody;
+    const vrel = new THREE.Vector3(b.velocity.x - (o ? o.velocity.x : 0), b.velocity.y - (o ? o.velocity.y : 0), b.velocity.z - (o ? o.velocity.z : 0));
+    const dv = new THREE.Vector3();
+    for (const dir of [R.cut, R.lat, R.along]) {
+      const fv = R.F.dot(dir), bv = vrel.dot(dir);
+      if (Math.sign(fv) !== -Math.sign(bv)) continue;
+      dv.addScaledVector(dir, -Math.sign(bv) * Math.min(Math.abs(fv) * h / m, Math.abs(bv)));
+    }
+    if (R.blunt) { const vn = vrel.dot(R.blunt); if (vn < 0.3) dv.addScaledVector(R.blunt, Math.min(0.3 - vn, 60 * R.nb * h / m)); }
+    b.velocity.x += dv.x; b.velocity.y += dv.y; b.velocity.z += dv.z;
+    if (o && o.mass > 0) o.applyImpulse(new CANNON.Vec3(-dv.x * m, -dv.y * m, -dv.z * m), new CANNON.Vec3(b.position.x - o.position.x, b.position.y - o.position.y, b.position.z - o.position.z));
+    // turning: the spin change from the flesh's torque, at most cancelling the spin about that axis
+    _mcF.set(R.T.x * h, R.T.y * h, R.T.z * h);
+    b.invInertiaWorld.vmult(_mcF, _mcR);
+    const dw = new THREE.Vector3(_mcR.x, _mcR.y, _mcR.z), l = dw.length();
+    if (l > 1e-6) {
+      const ax = dw.divideScalar(l), wa = ax.x * b.angularVelocity.x + ax.y * b.angularVelocity.y + ax.z * b.angularVelocity.z;
+      const d = wa < 0 ? Math.min(l, -wa) : 0;
+      b.angularVelocity.x += ax.x * d; b.angularVelocity.y += ax.y * d; b.angularVelocity.z += ax.z * d;
+    }
+  }
+  relVelVec() {   // blade velocity relative to the flesh it's in
+    const b = this.body, o = this.otherBody;
+    return _mt3.set(b.velocity.x - (o ? o.velocity.x : 0), b.velocity.y - (o ? o.velocity.y : 0), b.velocity.z - (o ? o.velocity.z : 0));
+  }
+  relVel(dir) { return this.relVelVec().dot(dir); }
+  dirW(x, y, z, out) { _cv.set(x, y, z); this.body.vectorToWorldFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z); }
+  inSlot(v, l) {   // inside a cut this blade has made (the voxels are coarser than the blade is thin)
+    const segs = this.slots.get(v); if (!segs) return false;
+    const r = v.h * 1.15;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const [a, c] = segs[i];
+      const abx = c.x - a.x, aby = c.y - a.y, abz = c.z - a.z, ab2 = abx * abx + aby * aby + abz * abz || 1e-9;
+      let t = ((l.x - a.x) * abx + (l.y - a.y) * aby + (l.z - a.z) * abz) / ab2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      if (Math.hypot(l.x - a.x - abx * t, l.y - a.y - aby * t, l.z - a.z - abz * t) < r) return true;
+    }
+    return false;
+  }
+  carveSlot(v, a, c, fill = false) {
+    v.carveCapsule(a, c, Math.max(0.0035, v.h * 0.6));
+    v.urgent = true;
+    let segs = this.slots.get(v); if (!segs) this.slots.set(v, segs = []);
+    segs.push([a.clone(), c.clone()]); if (segs.length > 2400) segs.shift();
+    if (fill) return;
+    this.cutLen = (this.cutLen || 0) + a.distanceTo(c);
+    if (this.cutLen > 0.03) {   // the cut bleeds along its length
+      this.cutLen = 0;
+      v.addWound(c, 0.7, 30, 'entry', 0.004);
+    }
+    const npcRef = v.npc;
+    if (npcRef) { const part = npcRef.parts[v.part]; if (part) { part.splitCheck = true; part.lastHit = c.clone(); } }
+  }
+  onEntry(en, cut, bone) {
+    const b = this.body, speed = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
+    goreSound(bone ? 'bone' : 'tear', en.wp, Math.min(1.3, 0.4 + speed * 0.12), { ref: 2 });
+    if (speed > 2) bloodSpray(en.wp, cut.clone().negate(), 4 + (speed * 2 | 0), Math.min(3, speed * 0.4));
+    en.v.addWound(en.local, 1.0, 30, 'entry', 0.006);
+    const npcRef = en.v.npc;
+    if (npcRef) {
+      const part = npcRef.parts[en.v.part];
+      if (part) {
+        const organs = (en.v.organs || []).filter(o => o.sdf(en.local.x, en.local.y, en.local.z) < 0.01).map(o => o.name);
+        npcRef.onHit(part, { entryLocal: en.local, exitPoint: null, organs, channel: 0.06 });
+      }
+    }
+  }
+  // held: the arm drives the blade toward the controller with a limited force; flesh resists
+  driveHeld(h, tvx, tvy, tvz) {
+    const b = this.body;
+    this.targetPose(_tp, _tq);
+    const dx = _tp.x - b.position.x, dy = _tp.y - b.position.y, dz = _tp.z - b.position.z;
+    if (!this.stuck && (this.holder.needsSnap || dx * dx + dy * dy + dz * dz > HAND_SNAP_DIST * HAND_SNAP_DIST)) {
+      this.placeAtTarget(); this.holder.needsSnap = false; return;
+    }
+    // what the arm wants: a velocity servo, expressed as a capped force
+    const wvx = tvx + dx / h * GUN_GAIN, wvy = tvy + dy / h * GUN_GAIN, wvz = tvz + dz / h * GUN_GAIN;
+    _f.set((wvx - b.velocity.x) * b.mass / h * GUN_SERVO, (wvy - b.velocity.y) * b.mass / h * GUN_SERVO, (wvz - b.velocity.z) * b.mass / h * GUN_SERVO);
+    // a free swing gets the whole arm behind it; once buried, it's the wrist driving a stuck blade, and
+    // only shoving the controller well past it pushes harder
+    const cutDir = this.dirW(0, -1, 0, _mt2), ahead = dx * cutDir.x + dy * cutDir.y + dz * cutDir.z;
+    // a deliberate push: the hand held well past the blade, along the cut, for a moment (a swing's
+    // follow-through passes in a fraction of a second and doesn't count)
+    this.pushT = (this.inFlesh || this.stuck) && ahead > 0.08 ? (this.pushT || 0) + h : 0;
+    const shove = this.pushT > 0.4;
+    clampLen(_f, this.inFlesh && !shove ? 130 : MCH.ARM_F);
+    if (this.stuck) {
+      // stuck in flesh: it only comes free when the arm pulls it back out, or drives it on harder
+      // than the flesh in front of the edge can resist
+      const cut = this.dirW(0, -1, 0, _mt2), push = _f.x * cut.x + _f.y * cut.y + _f.z * cut.z;
+      const spring = Math.hypot(dx, dy, dz) * 2200;
+      const sv = this.stuck, bone = !!sv.boneSdf && this.edge.some(e => { if (!e.inside || !e.prevW) return false; const l = localOf(sv, e.prevW, new THREE.Vector3()); return sv.boneSdf(l.x, l.y, l.z) < 0.004; });
+      const resist = this.edge.filter(e => e.inside).length * (bone ? MCH.R_BONE : MCH.R_FLESH);
+      if (-push > MCH.PULL_OUT && spring > MCH.PULL_OUT) this.unstick();
+      else if (shove && push > resist * 0.8 && spring > resist * 0.8) this.unstick();
+      else { this.placeHand(this.holder.body); return; }
+    }
+    this.bladeForces(h);
+    const carry = (b.mass + this.holder.body.mass) * GRAVITY;
+    player.force.x -= _f.x; player.force.y -= _f.y + carry; player.force.z -= _f.z;
+    b.velocity.x += _f.x * h / b.mass;
+    b.velocity.y += _f.y * h / b.mass + GRAVITY * h;
+    b.velocity.z += _f.z * h / b.mass;
+    // rotation follows the wrist, much less freely once the blade is buried
+    _q1.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w).invert();
+    _q2.copy(_tq).multiply(_q1);
+    if (_q2.w < 0) { _q2.x = -_q2.x; _q2.y = -_q2.y; _q2.z = -_q2.z; _q2.w = -_q2.w; }
+    const angle = 2 * Math.acos(Math.min(1, _q2.w)), s = Math.sqrt(Math.max(0, 1 - _q2.w * _q2.w));
+    let wx = 0, wy = 0, wz = 0;
+    if (s > 1e-5) { const w = Math.min(GUN_MAX_W, angle / h); wx = _q2.x / s * w; wy = _q2.y / s * w; wz = _q2.z / s * w; }
+    const k = this.inFlesh ? (this.pushT > 0.4 ? 0.35 : 0.1) : 0.85;
+    b.angularVelocity.x += (wx - b.angularVelocity.x) * k;
+    b.angularVelocity.y += (wy - b.angularVelocity.y) * k;
+    b.angularVelocity.z += (wz - b.angularVelocity.z) * k;
+    this.resist(h);   // after the arm's push and the wrist's turn
+    this.checkStick();
+    this.placeHand(this.holder.body);
+  }
+  checkStick() {
+    const b = this.body;
+    if (this.stuck || !this.inFlesh) { this.slowT = 0; return; }
+    const sp = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
+    const rel = this.inFlesh.body ? Math.hypot(b.velocity.x - this.inFlesh.body.velocity.x, b.velocity.y - this.inFlesh.body.velocity.y, b.velocity.z - this.inFlesh.body.velocity.z) : sp;
+    const deep = this.edge.filter(e => e.inside).length;
+    const spin = Math.hypot(b.angularVelocity.x, b.angularVelocity.y, b.angularVelocity.z) * 0.25;   // the blade's middle, turning
+    this.slowT = rel + spin < MCH.STICK_V && deep >= 1 ? (this.slowT || 0) + 1 : 0;
+    if (this.slowT > 6) this.stick(this.inFlesh);
+  }
+  // not held: free physics, still cutting what it falls or is thrown into
+  preStep(h) {
+    if (this.holder) return;
+    if (this.stuck) {
+      if (this.stuck.npc && this.stuck.body && !world.bodies.includes(this.stuck.body)) this.unstick();
+      return;
+    }
+    const b = this.body;
+    b.velocity.y -= GRAVITY * h;   // count this step's gravity before the flesh holds it (the world adds it back)
+    this.bladeForces(h);
+    this.resist(h);
+    b.velocity.y += GRAVITY * h;
+    this.checkStick();
+  }
+  update(dt) {
+    if (this.holder && !this.holder.active) this.drop();
+    this.group.position.copy(this.body.position);
+    this.group.quaternion.copy(this.body.quaternion);
+  }
+}
+for (const k of ['placeAtTarget', 'placeHand']) Machete.prototype[k] = Pistol.prototype[k];
+const machete = new Machete();
+guns.push(machete);
+
+// every physics step: hands on flesh, blades in flesh
+function meshStep(h) {
+  for (const hand of [hands.left, hands.right]) handMeshContacts(hand, h);
+  for (const g of guns) g.preStep?.(h);
+}
+
 // ---------- reset buttons (for VR: push it with your hand) ----------
 const resetButtons = [];
 class ResetButton {
@@ -4236,7 +4741,7 @@ function resetRange() {
 }
 
 // debug handle for console tinkering
-window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get pools() { return pools; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, npc, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get pools() { return pools; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, npc, machete, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -4264,6 +4769,7 @@ function frame(dt, draw) {
       hand.drive(H);
     }
     npc.drive(H);
+    meshStep(H);
     world.step(H);
     updateHandContacts();
     simTime += H;
