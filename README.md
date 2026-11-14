@@ -37,3 +37,9 @@ A tag over the NPC's head shows its blood volume. Bleeding from every wound drai
 
 ### Gore sounds
 Bullet, bone, tearing and body-fall hits are recordings from Will Leamon's Fleshy Fight Sounds (OGA-BY 3.0); splats are cut from CC0 splatter recordings at load time; chunks and guts use CC0 squishes. See CREDITS.md.
+
+### Dismemberment
+After every hit the damaged part's flesh is checked for pieces that are no longer connected. The piece holding the joint toward the body stays; any other sizeable piece becomes its own rigid body with its own flesh (a shoe or hand goes with it), and joints on it move with it. A part shot down to a thin strip tears through. Losing an arm or a leg is survivable (limb wounds clot over time, and a lost leg keeps him down); a torso split or losing the head is fatal.
+
+### Shotgun loading
+Bring a shell up anywhere under the receiver or the front of the tube and it goes in, in any orientation.

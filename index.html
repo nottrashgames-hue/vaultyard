@@ -95,7 +95,7 @@
     <dl>
       <dt>Grip it</dt><dd>Goes to your hand by the stock</dd>
       <dt>Other hand</dt><dd>Grip the forend to aim two-handed; pull it back and push it forward to pump</dd>
-      <dt>Load</dt><dd>Push a shell up into the port under the receiver (6 in the tube). The pouch gives shells while you hold it.</dd>
+      <dt>Load</dt><dd>Bring a shell up to the underside of the gun anywhere under the receiver or tube and it goes in (6 in the tube). The pouch gives shells while you hold it.</dd>
       <dt>Close range</dt><dd>Pellets that land together tear chunks out of the flesh</dd>
       <dt>Reset</dt><dd>Push either red RESET RANGE button (by the benches and at spawn)</dd>
     </dl>
@@ -104,6 +104,7 @@
       <dt>Physics</dt><dd>Fully simulated body with muscle motors and balance. Shove it and it stumbles, stepping to catch itself; push hard enough and it falls, then gets back up after a moment. Grab a limb and drag it</dd>
       <dt>Damage</dt><dd>Skin, muscle, bone and organs in every part. A brain or heart hit is fatal (the heart takes a few seconds); heavy bleeding kills too; leg hits make it buckle</dd>
       <dt>Blood</dt><dd>The tag over his head shows his blood volume. He goes paler as he loses it, presses a hand on his worst wound (which slows it), passes out below 60% and dies at 45%</dd>
+      <dt>Dismemberment</dt><dd>Shoot a limb or the body clean through and the two parts separate. He can live through losing an arm or a leg; not a torso split or his head</dd>
       <dt>Organs</dt><dd>Open the belly wide enough (shotgun, or several hits close together) and the intestines spill out. You can grab them</dd>
       <dt>Ammo pouch</dt><dd>On your left hip. Reach in with your free hand and grip to pull a magazine for the gun you're holding. Let a magazine go inside the pouch to put it away.</dd>
       <dt>Desktop</dt><dd>F fire · E rack / pump · Q drop mag · X ammo from pouch · Z load ammo from other hand</dd>
@@ -2045,14 +2046,14 @@ class Shotgun {
       if (this.autoPump <= 0) { this.pumpPos = 0; this.pumpForward(); }
     }
     if (this.recoilT > 0) this.recoilT -= dt;
-    // a held shell pushed up into the loading port goes in
+    // a held shell brought up anywhere under the receiver or the front of the tube goes in
     if (this.holder && this.tube < SG.TUBE) {
-      const port = this.toWorld(SG.PORT, _sv1);
       for (const hand of [hands.left, hands.right]) {
         const e = hand.held?.d;
         if (!e?.isShell || hand === this.holder) continue;
-        const p = e.body.position;
-        if (Math.hypot(p.x - port.x, p.y - port.y, p.z - port.z) < 0.045) { this.loadAmmo(e, hand); break; }
+        const l = this.toLocal(_sv2.set(e.body.position.x, e.body.position.y, e.body.position.z), _sv3);
+        const z = Math.max(SG.PORT.z - 0.2, Math.min(SG.PORT.z + 0.06, l.z));
+        if (Math.hypot(l.x, l.y - (SG.PORT.y - 0.01), l.z - z) < 0.085) { this.loadAmmo(e, hand); break; }
       }
     }
     this.group.position.copy(this.body.position);
@@ -2225,18 +2226,21 @@ function meshGrid(vals, nx, ny, nz, mn, h, shade) {
 }
 
 class DamageVolume {
-  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null, skin = null, cloth = false, organs = null, chunk = 16, paint = null, material = null }) {
+  constructor({ sdf, boneSdf = null, min, max, voxel = 0.008, onHit = null, skin = null, cloth = false, organs = null, chunk = 16, paint = null, material = null, field = null }) {
     this.sdf = sdf; this.boneSdf = boneSdf; this.h = voxel; this.onHit = onHit;
     this.skin = skin || FLESH.skin; this.cloth = cloth; this.organs = organs; this.paint = paint; this.material = material;
     this.min = new THREE.Vector3(...min);
     const size = new THREE.Vector3(...max).sub(this.min);
     this.N = [Math.ceil(size.x / voxel), Math.ceil(size.y / voxel), Math.ceil(size.z / voxel)];
     this.P = this.N.map(n => n + 1);
-    this.f = new Float32Array(this.P[0] * this.P[1] * this.P[2]);
-    for (let k = 0; k < this.P[2]; k++) for (let j = 0; j < this.P[1]; j++) for (let i = 0; i < this.P[0]; i++)
-      this.f[this.idx(i, j, k)] = sdf(this.min.x + i * voxel, this.min.y + j * voxel, this.min.z + k * voxel);
-    this.base = this.f.slice();
-    this.blood = new Float32Array(this.f.length);
+    if (field) { this.f = field.f; this.base = field.base; this.blood = field.blood; }   // a piece torn off another volume
+    else {
+      this.f = new Float32Array(this.P[0] * this.P[1] * this.P[2]);
+      for (let k = 0; k < this.P[2]; k++) for (let j = 0; j < this.P[1]; j++) for (let i = 0; i < this.P[0]; i++)
+        this.f[this.idx(i, j, k)] = sdf(this.min.x + i * voxel, this.min.y + j * voxel, this.min.z + k * voxel);
+      this.base = this.f.slice();
+      this.blood = new Float32Array(this.f.length);
+    }
     this.emitters = []; this.flows = []; this.beads = []; this.bruises = [];
     this.C = chunk;
     this.CN = this.N.map(n => Math.ceil(n / this.C));
@@ -3137,16 +3141,16 @@ function npcDefs() {
 // pose: target rotation of the child relative to its parent ([x, y, z] Euler, radians)
 function npcJoints() {
   const j = [
-    ['pelvis', 'abdomen', [0, 1.065, -0.01], 'ball', [0, 1, 0], 0.5, 320, [0, 0, 0]],
-    ['abdomen', 'chest', [0, 1.24, -0.01], 'ball', [0, 1, 0], 0.45, 280, [0, 0, 0]],
+    ['pelvis', 'abdomen', [0, 1.065, -0.01], 'ball', [0, 1, 0], 0.5, 480, [0, 0, 0]],
+    ['abdomen', 'chest', [0, 1.24, -0.01], 'ball', [0, 1, 0], 0.45, 420, [0, 0, 0]],
     ['chest', 'head', [0, 1.53, 0], 'ball', [0, 1, 0], 0.8, 45, [0, 0, 0]],
   ];
   for (const [s, S] of [[1, 'L'], [-1, 'R']]) {
     j.push(
       ['chest', 'upperArm' + S, [s * 0.215, 1.47, 0], 'ball', [0, -1, 0], 1.7, 45, [-0.05, 0, s * 0.08]],
       ['upperArm' + S, 'forearm' + S, [s * 0.235, 1.19, 0], 'hinge', [1, 0, 0], [-2.5, 0.02], 25, [-0.3, 0, 0]],
-      ['pelvis', 'thigh' + S, [s * 0.1, 0.905, 0], 'ball', [0, -1, 0], 1.3, 380, [0, 0, 0]],
-      ['thigh' + S, 'shin' + S, [s * 0.1, 0.5, 0], 'hinge', [1, 0, 0], [-0.02, 2.4], 380, [0, 0, 0]],
+      ['pelvis', 'thigh' + S, [s * 0.1, 0.905, 0], 'ball', [0, -1, 0], 1.3, 620, [0, 0, 0]],
+      ['thigh' + S, 'shin' + S, [s * 0.1, 0.5, 0], 'hinge', [1, 0, 0], [-0.02, 2.4], 620, [0, 0, 0]],
     );
   }
   return j;
@@ -3206,10 +3210,10 @@ class RagdollNPC {
   constructor(x, z, yaw) {
     this.origin = new THREE.Vector3(x, 0, z);
     this.q0 = new THREE.Quaternion().setFromAxisAngle(_Y, yaw);
-    this.parts = {}; this.list = []; this.drives = []; this.guts = [];
+    this.parts = {}; this.list = []; this.drives = []; this.guts = []; this.joints = []; this.pieces = [];
     this.footRay = new CANNON.RaycastResult();
     // balance: spring-damper torques (N·m per rad, N·m·s per rad) per planted foot, and their cap
-    this.tune = { kpP: 250, kdP: 12, cap: 70, capture: 0.3, fwd: 0.14, back: 0.1, side: 0.17, swingK: 1800, swingC: 85, swingMax: 450, swingSoft: 0.2, leanGain: 6, leanLeak: 0.5, leanMax: 0.6 };
+    this.tune = { kpP: 420, kdP: 22, cap: 100, capture: 0.26, fwd: 0.18, back: 0.13, side: 0.2, swingK: 1800, swingC: 85, swingMax: 450, swingSoft: 0.2, leanGain: 6, leanLeak: 0.5, leanMax: 0.6 };
     for (const def of npcDefs()) this.addPart(def);
     for (const [pa, ch, pv, type, axis, limit, torque, pose] of npcJoints()) this.addJoint(pa, ch, pv, type, axis, limit, torque, pose);
     this.reset();
@@ -3234,7 +3238,7 @@ class RagdollNPC {
       part.vol = vol;
       if (def.foot) {
         const shoe = new THREE.Mesh(new RoundedShoe(def.foot.box), shoeMat);
-        shoe.position.set(...def.foot.at); shoe.castShadow = true;
+        shoe.position.set(...def.foot.at); shoe.castShadow = true; shoe.userData.shoe = true;
         vol.object.add(shoe);
       }
     }
@@ -3254,15 +3258,29 @@ class RagdollNPC {
       : new CANNON.ConeTwistConstraint(A.body, B.body, { pivotA: pA, pivotB: pB, axisA: ax, axisB: ax, angle: limit, twistAngle: 0.6, collideConnected: false });
     world.addConstraint(c);
     const leg = /thigh|shin/.test(ch) ? B.side : null;
-    this.drives.push({ A: A.body, B: B.body, m: new Muscle(A.body, B.body), name: ch, torque, leg, hinge: type === 'hinge' ? limit : null,
-      pose: new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose)), target: new THREE.Quaternion() });
+    this.joints.push({ A, B, c, cur: c, pA, pB, type, ax, limit, rebound: false });
+    this.joints[this.joints.length - 1].drive = this.drives[this.drives.push({ A: A.body, B: B.body, m: new Muscle(A.body, B.body), name: ch, torque, leg, hinge: type === 'hinge' ? limit : null,
+      pose: new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose)), target: new THREE.Quaternion() }) - 1];
   }
   reset() {
     for (const h of [hands.left, hands.right]) if (h.held?.d?.npc === this || h.held?.d?.gut) h.release();
     for (const g of this.guts) g.dispose();
     this.guts.length = 0;
     npcSkinMat.userData.pale.value = 0;
+    for (const pc of this.pieces) {
+      for (const h of [hands.left, hands.right]) if (h.held?.d?.body === pc.body) h.release();
+      for (const m of pc.moved) { pc.body.removeShape(m.sh); pc.part.body.addShape(m.sh, m.so); }
+      if (pc.shoe) pc.part.vol.object.add(pc.shoe);
+      world.removeBody(pc.body); scene.remove(pc.vol.object);
+      for (const m of pc.vol.meshes.values()) m.geometry.dispose();
+      for (const list of [damageables, grabbables]) { const i = list.findIndex(e => e === pc.vol || e === pc.grab); if (i >= 0) list.splice(i, 1); }
+    }
+    this.pieces.length = 0;
+    for (const j of this.joints) if (j.cur !== j.c) { if (j.cur) world.removeConstraint(j.cur); world.addConstraint(j.c); j.cur = j.c; j.rebound = false; }
+    for (const d of this.drives) if (d.cut) { world.addConstraint(d.m); d.cut = false; }
+    this.limbLost = { legL: false, legR: false, armL: false, armR: false };
     for (const p of this.list) {
+      p.detached = false; p.splitCheck = false;
       const b = p.body, pos = this.restPos(p.def, _v3);
       b.position.set(pos.x, pos.y, pos.z); b.quaternion.set(this.q0.x, this.q0.y, this.q0.z, this.q0.w);
       b.velocity.setZero(); b.angularVelocity.setZero();
@@ -3279,6 +3297,7 @@ class RagdollNPC {
   get state() { return !this.alive ? `dead (${this.cause})` : !this.conscious ? 'unconscious' : this.fallen ? (this.rising ? 'getting up' : 'down') : this.step ? 'stepping' : 'standing'; }
   get bloodPct() { return Math.max(0, 100 * (1 - this.bloodLost / NPC_BLOOD_TOTAL)); }
   grounded(shin) {   // is this leg's shoe on something?
+    if (shin.detached || this.limbLost['leg' + shin.side] || shin.body.shapes.length < 2) return false;
     const p = shin.body.pointToWorldFrame(shin.body.shapeOffsets[1], _gp);
     this.footRay.reset();
     return world.raycastClosest(new CANNON.Vec3(p.x, p.y, p.z), new CANNON.Vec3(p.x, p.y - 0.075, p.z),
@@ -3327,6 +3346,7 @@ class RagdollNPC {
     const fw = this.frame(pel), lf = this.lean.x * fw.x + this.lean.z * fw.z, ls = this.lean.x * _nsl.x + this.lean.z * _nsl.z;
     _hipLean.setFromEuler(_eul.set(lf, 0, -ls));
     for (const d of this.drives) {
+      if (d.cut) continue;
       let torque = d.torque * this.tone * (d.leg ? this.legWeak[d.leg] : 1);
       d.target.copy(d.pose);
       if (this.press && this.press.arm && (d.name === 'upperArm' + this.press.arm || d.name === 'forearm' + this.press.arm)) torque *= 0.15;
@@ -3377,7 +3397,7 @@ class RagdollNPC {
       this.pressT = 1.5;
       let best = null, bestR = 0.15;
       for (const w of this.wounds) {
-        if (w.noReach) continue;
+        if (w.noReach || this.parts[w.part]?.detached) continue;
         const r = this.woundBleed(w);
         if (r <= bestR) continue;
         const arm = w.side ? (w.side === 'L' ? 'R' : 'L') : null;
@@ -3392,6 +3412,8 @@ class RagdollNPC {
         const reach = (x) => { ch.pointToWorldFrame(_gp.set(x, 0.1, 0), _gp); return Math.abs(Math.hypot(wp.x - _gp.x, wp.y - _gp.y, wp.z - _gp.z) - 0.42); };
         best.useArm = reach(0.215) < reach(-0.215) ? 'L' : 'R';
       }
+      if (this.limbLost['arm' + best.useArm]) best.useArm = best.useArm === 'L' ? 'R' : 'L';
+      if (this.limbLost['arm' + best.useArm]) { this.press = null; return; }
       if (this.press?.w !== best) this.press = { w: best, arm: best.useArm, on: false };
     }
     if (this.press) {
@@ -3426,13 +3448,14 @@ class RagdollNPC {
   massCenter(c, v) {
     let m = 0; c.set(0, 0, 0); v.set(0, 0, 0);
     for (const p of this.list) {
+      if (p.detached) continue;
       const b = p.body; m += b.mass;
       c.x += b.position.x * b.mass; c.y += b.position.y * b.mass; c.z += b.position.z * b.mass;
       v.x += b.velocity.x * b.mass; v.y += b.velocity.y * b.mass; v.z += b.velocity.z * b.mass;
     }
     c.divideScalar(m); v.divideScalar(m);
   }
-  shoe(S, out) { const b = this.parts['shin' + S].body; b.pointToWorldFrame(b.shapeOffsets[1], _gp); return out.set(_gp.x, _gp.y, _gp.z); }
+  shoe(S, out) { const b = this.parts['shin' + S].body; b.pointToWorldFrame(b.shapeOffsets[1] || _shinEnd, _gp); return out.set(_gp.x, _gp.y, _gp.z); }   // no foot left: the end of the shin
   frame(b) {   // the body's forward (returned) and left (_nsl) directions, flattened
     const f = _nsf.set(0, 0, 1).applyQuaternion(cq(b, _nq)); f.y = 0;
     if (f.lengthSq() < 0.04) { f.set(0, 1, 0).applyQuaternion(_nq); f.y = 0; }
@@ -3465,7 +3488,7 @@ class RagdollNPC {
       const df = dx * f.x + dz * f.z, dl = dx * _nsl.x + dz * _nsl.z;
       const tu = this.tune;
       if (df < tu.fwd && df > -tu.back && Math.abs(dl) < tu.side) { this.outFor = 0; return; }   // still over the feet
-      if (++this.outFor < 4) return;                                        // a moment's wobble isn't worth a step
+      if (++this.outFor < 8) return;                                        // a moment's wobble isn't worth a step
       let S;
       if (Math.abs(dl) > 0.07) S = dl > 0 ? 'L' : 'R';                      // falling sideways: that side's foot
       else S = Math.hypot(cpx - sL.x, cpz - sL.z) > Math.hypot(cpx - sR.x, cpz - sR.z) ? 'L' : 'R';
@@ -3542,6 +3565,12 @@ class RagdollNPC {
     return out.setFromAxisAngle(_Y, Math.atan2(f.x, f.z));
   }
   sync() {
+    for (const pc of this.pieces) {
+      const o = pc.vol.object, b = pc.body;
+      o.quaternion.copy(b.quaternion);
+      o.position.copy(pc.offset).applyQuaternion(o.quaternion).add(b.position);
+      o.updateMatrixWorld();
+    }
     if (this.alive || this.fallen) this.blockPlayer();
     for (const p of this.list) {
       const o = p.vol ? p.vol.object : p.mesh;
@@ -3552,7 +3581,17 @@ class RagdollNPC {
   update(dt) {
     this.choosePress(dt);
     let rate = 0;
-    for (const p of this.list) if (p.vol) for (const e of p.vol.emitters) rate += e.rate * (e.press ? 0.25 : 1);
+    // how much of what runs out of a wound is real blood loss depends on where it is: limbs bleed
+    // visibly but survivably, the trunk (big vessels, organs) much more
+    for (const p of this.list) if (p.vol) {
+      const k = /thigh|shin|upperArm|forearm/.test(p.name) ? 0.1 : p.name === 'head' ? 0.4 : 0.45;
+      const limb = k < 0.2;
+      for (const e of p.vol.emitters) {
+        e.born ??= simTime;
+        const clot = limb ? Math.exp(-(simTime - e.born) / 25) : 1;   // limb vessels clamp down and clot
+        rate += e.rate * (e.press ? 0.25 : 1) * k * clot;
+      }
+    }
     this.bloodLost += rate * dt;
     if (this.alive && this.conscious && this.bloodLost > NPC_BLOOD_TOTAL * NPC_FAINT) { this.conscious = false; this.press = null; this.rising = false; }
     const lostFrac = this.bloodLost / NPC_BLOOD_TOTAL;
@@ -3584,9 +3623,9 @@ class RagdollNPC {
     let target;
     if (!this.alive) target = 0;
     else {
-      const vit = Math.max(0.25, 1 - this.bloodLost / (NPC_BLOOD * 1.4));
+      const vit = Math.max(0.45, 1 - this.bloodLost / (NPC_BLOOD * 1.8));
       const heart = this.dieAt ? Math.max(0.2, (this.dieAt - simTime) / 3) : 1;   // heart shot: fading out
-      target = !this.conscious ? 0.03 : vit * Math.min(1, heart) * (1 - 0.6 * this.flinch) * (this.fallen && !this.rising ? 0.35 : 1);
+      target = !this.conscious ? 0.03 : vit * Math.min(1, heart) * (1 - 0.3 * this.flinch) * (this.fallen && !this.rising ? 0.35 : 1);
     }
     this.tone += (target - this.tone) * Math.min(1, dt * (this.alive ? 6 : this.cause === 'brain' ? 40 : 4));
     // look at the player while alive
@@ -3600,6 +3639,7 @@ class RagdollNPC {
       head.pose.setFromAxisAngle(_Y, dyaw);
     }
     if (this.fallThud && pel.position.y < 0.32) { this.fallThud = false; goreSound('body', pel.position, 0.9, { ref: 2, rate: 0.8 }); }
+    for (const p of this.list) if (p.splitCheck) { p.splitCheck = false; this.checkSplit(p); }
     if (this.spill) this.checkSpill();
     for (const g of this.guts) g.update(dt);
   }
@@ -3639,6 +3679,7 @@ class RagdollNPC {
   }
   onHit(part, info) {
     this.hits++;
+    part.splitCheck = true; part.lastHit = info.entryLocal.clone();
     this.addWoundSpot(part, info.entryLocal);
     if (info.exitPoint) this.addWoundSpot(part, info.exitPoint.clone().applyMatrix4(_dmgInv.copy(part.vol.object.matrixWorld).invert()));
     if (part.name === 'abdomen') this.spill = { near: info.entryLocal.clone(), far: info.exitPoint ? info.exitPoint.clone().applyMatrix4(_dmgInv.copy(part.vol.object.matrixWorld).invert()) : null };
@@ -3649,7 +3690,7 @@ class RagdollNPC {
       part.vol.addWound(info.entryLocal, 4, 40, 'blast', 0.01);   // pumping out
     }
     this.flinch = Math.min(1, this.flinch + (info.channel > 0.05 ? 0.5 : 0.25));
-    if (part.side && /thigh|shin/.test(part.name)) this.legWeak[part.side] *= 0.6;
+    if (part.side && /thigh|shin/.test(part.name)) this.legWeak[part.side] *= 0.8;
   }
   addWoundSpot(part, p) {
     this.wounds.push({ part: part.name, side: /upperArm|forearm/.test(part.name) ? part.side : null, vol: part.vol, p: p.clone() });
@@ -3657,9 +3698,194 @@ class RagdollNPC {
     this.pressT = Math.min(this.pressT, 0.4);   // react to a fresh wound quickly
   }
   onTear(part, mid) {
+    part.splitCheck = true; part.lastHit = mid.clone();
     this.addWoundSpot(part, mid);
     if (part.name === 'abdomen') this.spill = { near: mid.clone(), far: null };
     if (this.alive && part.name === 'head') this.kill('brain');
+  }
+  // ---- dismemberment ----
+  // After damage, the part's voxels are split into connected pieces. The piece that holds the joint
+  // toward the body stays; any other sizeable piece becomes its own rigid body with its own flesh, and
+  // joints on it (a knee, an elbow) move with it. A joint whose bone is shot away lets go entirely.
+  // Losing a limb is survivable (both ends bleed hard); a torso split or the neck is not.
+  pivotLabel(v, local, lab) {   // component at a joint pivot: -2 = not part of this part's flesh, -1 = shot away
+    const h = v.h, gi = Math.round((local.x - v.min.x) / h), gj = Math.round((local.y - v.min.y) / h), gk = Math.round((local.z - v.min.z) / h);
+    let seenBase = false;
+    for (let r = 0; r <= 3; r++) for (let dk = -r; dk <= r; dk++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj), Math.abs(dk)) !== r) continue;
+      const i = gi + di, j = gj + dj, k = gk + dk;
+      if (i < 0 || j < 0 || k < 0 || i >= v.P[0] || j >= v.P[1] || k >= v.P[2]) continue;
+      const o = v.idx(i, j, k);
+      if (v.base[o] < 0) seenBase = true;
+      if (lab[o] >= 0) return lab[o];
+    }
+    return seenBase ? -1 : -2;
+  }
+  checkSplit(part, torn = false) {
+    if (part.detached) return;
+    const v = part.vol, f = v.f, n = f.length, P0 = v.P[0], P01 = P0 * v.P[1];
+    const lab = new Int32Array(n).fill(-1), queue = new Int32Array(n), comps = [];
+    let total = 0;
+    for (let s0 = 0; s0 < n; s0++) {
+      if (f[s0] >= 0 || lab[s0] >= 0) continue;
+      const id = comps.length; let qh = 0, qt = 0, cnt = 0;
+      const c = { id, n: 0, x: 0, y: 0, z: 0, lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9] };
+      lab[s0] = id; queue[qt++] = s0;
+      while (qh < qt) {
+        const o = queue[qh++]; cnt++;
+        const i = o % P0, j = ((o / P0) | 0) % v.P[1], k = (o / P01) | 0;
+        const x = v.min.x + i * v.h, y = v.min.y + j * v.h, z = v.min.z + k * v.h;
+        c.x += x; c.y += y; c.z += z;
+        if (x < c.lo[0]) c.lo[0] = x; if (y < c.lo[1]) c.lo[1] = y; if (z < c.lo[2]) c.lo[2] = z;
+        if (x > c.hi[0]) c.hi[0] = x; if (y > c.hi[1]) c.hi[1] = y; if (z > c.hi[2]) c.hi[2] = z;
+        const nb = [i > 0 ? o - 1 : -1, i < P0 - 1 ? o + 1 : -1, j > 0 ? o - P0 : -1, j < v.P[1] - 1 ? o + P0 : -1, k > 0 ? o - P01 : -1, k < v.P[2] - 1 ? o + P01 : -1];
+        for (const m of nb) if (m >= 0 && f[m] < 0 && lab[m] < 0) { lab[m] = id; queue[qt++] = m; }
+      }
+      c.n = cnt; total += cnt; comps.push(c);
+    }
+    const big = comps.filter(c => c.n >= Math.max(30, total * 0.04));
+    const crumbs = comps.filter(c => !big.includes(c));
+    // joints on this part, and which piece each pivot sits in
+    const js = this.joints.filter(j => j.cur && !j.rebound && (j.A === part || j.B === part)).map(j => {
+      const pv = j.A === part ? j.pA : j.pB;
+      return { j, label: this.pivotLabel(v, pv, lab) };
+    }).filter(x => x.label !== -2);
+    const parentJ = js.find(x => x.j.B === part);
+    let main = parentJ && parentJ.label >= 0 ? parentJ.label : -1;
+    if (main < 0 && big.length) main = big.reduce((a, b) => (b.n > a.n ? b : a)).id;
+    const cut = js.filter(x => x.label === -1 || (x.label >= 0 && x.label !== main && !big.some(c => c.id === x.label)));
+    const off = big.filter(c => c.id !== main);
+    if (!off.length && !cut.length) {
+      if (crumbs.length) { for (let o = 0; o < n; o++) if (lab[o] >= 0 && crumbs.some(c => c.id === lab[o])) f[o] = v.h * 1.5; v.rebuildAll(); }
+      // a part shot down to a thin strip can't hold its own weight: the strip tears
+      if (!torn && this.tearThinLayer(part)) this.checkSplit(part, true);
+      return;
+    }
+    // severed pieces
+    for (const c of off) {
+      const pc = this.makePiece(part, c, lab);
+      for (const x of js) if (x.label === c.id) this.rebind(x.j, part, pc);
+    }
+    for (const x of cut) this.unjoin(x.j);
+    for (let o = 0; o < n; o++) if (lab[o] >= 0 && lab[o] !== main) f[o] = v.h * 1.5;   // the stump keeps only its own flesh
+    v.rebuildAll();
+    this.afterSever(part, off.length, cut.map(x => x.j));
+  }
+  tearThinLayer(part) {
+    const v = part.vol, P0 = v.P[0], P1 = v.P[1], P2 = v.P[2];
+    const cnt = new Int32Array(P1), base = new Int32Array(P1);
+    for (let k = 0; k < P2; k++) for (let j = 0; j < P1; j++) for (let i = 0; i < P0; i++) {
+      const o = v.idx(i, j, k);
+      if (v.base[o] < 0) base[j]++;
+      if (v.f[o] < 0) cnt[j]++;
+    }
+    let lo = 0, hi = P1 - 1;
+    while (lo < P1 && base[lo] < 8) lo++;
+    while (hi > 0 && base[hi] < 8) hi--;
+    let best = -1, bestR = 0.15;
+    for (let j = lo + 3; j <= hi - 3; j++) {
+      if (base[j] < 20) continue;
+      const r = cnt[j] / base[j];
+      if (r < bestR && cnt[j] > 0) { bestR = r; best = j; }
+    }
+    if (best < 0) return false;
+    for (let k = 0; k < P2; k++) for (let j = best - 1; j <= best + 1; j++) for (let i = 0; i < P0; i++) {
+      const o = v.idx(i, j, k); if (v.f[o] < 0) v.f[o] = v.h * 0.8;
+    }
+    part.lastHit = new THREE.Vector3(0, v.min.y + best * v.h, 0);
+    return true;
+  }
+  makePiece(part, c, lab) {
+    const v = part.vol, def = part.def, h = v.h;
+    const f2 = new Float32Array(v.f.length).fill(h * 1.5);
+    for (let o = 0; o < f2.length; o++) if (lab[o] === c.id) f2[o] = v.f[o];
+    const cen = new THREE.Vector3(c.x / c.n, c.y / c.n, c.z / c.n);
+    const pv = new DamageVolume({ sdf: def.sdf, boneSdf: def.bone, min: def.min, max: def.max, voxel: def.voxel, skin: def.skin, cloth: def.cloth,
+      organs: def.organs, paint: def.paint, material: npcSkinMat, chunk: v.C, field: { f: f2, base: v.base.slice(), blood: v.blood.slice() } });
+    const half = new CANNON.Vec3(Math.max(0.02, (c.hi[0] - c.lo[0]) / 2), Math.max(0.02, (c.hi[1] - c.lo[1]) / 2), Math.max(0.02, (c.hi[2] - c.lo[2]) / 2));
+    const mid = new THREE.Vector3((c.hi[0] + c.lo[0]) / 2, (c.hi[1] + c.lo[1]) / 2, (c.hi[2] + c.lo[2]) / 2);
+    const body = new CANNON.Body({ mass: Math.max(0.3, Math.min(def.mass, c.n * h * h * h * 1050)), material: matNPC, linearDamping: 0.05, angularDamping: 0.2,
+      collisionFilterGroup: G.NPC, collisionFilterMask: NPC_MASK });
+    body.addShape(new CANNON.Box(half));
+    // a shoe or hand on the severed end goes with it (collision shape and model)
+    const moved = [];
+    for (let i = part.body.shapes.length - 1; i >= 1; i--) {
+      const sh = part.body.shapes[i], so = part.body.shapeOffsets[i].clone();
+      if (this.pivotLabel(v, so, lab) !== c.id) continue;
+      part.body.removeShape(sh);
+      body.addShape(sh, new CANNON.Vec3(so.x - mid.x, so.y - mid.y, so.z - mid.z));
+      moved.push({ sh, so });
+    }
+    const shoe = v.object.children.find(o => o.userData.shoe);
+    if (shoe && moved.length && /shin/.test(def.name)) pv.object.add(shoe);
+    const b0 = part.body, wp = b0.pointToWorldFrame(new CANNON.Vec3(mid.x, mid.y, mid.z));
+    body.position.copy(wp); body.quaternion.copy(b0.quaternion);
+    body.velocity.copy(b0.velocity); body.angularVelocity.copy(b0.angularVelocity);
+    world.addBody(body); scene.add(pv.object);
+    pv.body = body; pv.part = def.name + ' (severed)'; pv.onHit = () => {};
+    const pc = { body, vol: pv, offset: mid.clone().negate(), mid, part, moved, shoe: shoe && moved.length && /shin/.test(def.name) ? shoe : null };
+    pc.grab = { body, kind: 'box', half, mask: NPC_MASK, npc: this };
+    grabbables.push(pc.grab);
+    this.pieces.push(pc);
+    // the torn end bleeds
+    const cutP = part.lastHit || cen;
+    pv.addWound(pv.rimPoint(cutP.clone().lerp(cen, 0.3)), 1.6, 14, 'blast', 0.02);
+    this.sync();
+    return pc;
+  }
+  makeJoint(j, A, B, pA, pB) {
+    const c = j.type === 'hinge'
+      ? new CANNON.HingeConstraint(A, B, { pivotA: pA, pivotB: pB, axisA: j.ax, axisB: j.ax, collideConnected: false })
+      : new CANNON.ConeTwistConstraint(A, B, { pivotA: pA, pivotB: pB, axisA: j.ax, axisB: j.ax, angle: j.limit, twistAngle: 0.6, collideConnected: false });
+    world.addConstraint(c); return c;
+  }
+  rebind(j, part, pc) {   // the joint now hangs off the severed piece
+    world.removeConstraint(j.cur);
+    const o = pc.mid;
+    if (j.A === part) j.cur = this.makeJoint(j, pc.body, j.B.body, new CANNON.Vec3(j.pA.x - o.x, j.pA.y - o.y, j.pA.z - o.z), j.pB);
+    else j.cur = this.makeJoint(j, j.A.body, pc.body, j.pA, new CANNON.Vec3(j.pB.x - o.x, j.pB.y - o.y, j.pB.z - o.z));
+    j.rebound = true;
+    if (!j.drive.cut) { world.removeConstraint(j.drive.m); j.drive.cut = true; }
+  }
+  unjoin(j) {   // bone shot through at the joint: it lets go
+    world.removeConstraint(j.cur); j.cur = null;
+    if (!j.drive.cut) { world.removeConstraint(j.drive.m); j.drive.cut = true; }
+  }
+  afterSever(part, offCount, cutJ) {
+    // what's still connected to the pelvis through intact joints?
+    const reached = new Set([this.parts.pelvis]), q = [this.parts.pelvis];
+    while (q.length) {
+      const a = q.pop();
+      for (const j of this.joints) {
+        if (!j.cur || j.rebound) continue;
+        const o = j.A === a ? j.B : j.B === a ? j.A : null;
+        if (o && !reached.has(o)) { reached.add(o); q.push(o); }
+      }
+    }
+    for (const p of this.list) {
+      p.detached = !reached.has(p);
+      if (p.detached) for (const d of this.drives) if (!d.cut && (d.A === p.body || d.B === p.body)) { world.removeConstraint(d.m); d.cut = true; }
+    }
+    const P = this.parts;
+    for (const S of ['L', 'R']) {
+      if (P['thigh' + S].detached || P['shin' + S].detached || this.pieces.some(pc => pc.part === P['thigh' + S] || pc.part === P['shin' + S])) { this.limbLost['leg' + S] = true; this.legWeak[S] = 0; }
+      if (P['upperArm' + S].detached || P['forearm' + S].detached || this.pieces.some(pc => pc.part === P['upperArm' + S] || pc.part === P['forearm' + S])) this.limbLost['arm' + S] = true;
+    }
+    // the stump bleeds hard: arteries in a limb, survivable if it's held or clots; not so the trunk or neck
+    if (!part.detached && part.lastHit) {
+      part.vol.addWound(part.lastHit, 2.4, 24, 'blast', 0.02);
+      part.vol.addWound(part.lastHit.clone().add(new THREE.Vector3(0.01, -0.01, 0.005)), 1.6, 24, 'blast', 0.02);
+      this.addWoundSpot(part, part.lastHit);
+    }
+    const wp = part.body.position;
+    goreSound('tear', wp, 1.3, { ref: 2.5, reverb: 0.2 }); goreSound('splat', wp, 1, { ref: 2 }); goreSound('bone', wp, 0.8, { ref: 2 });
+    bloodSpray(new THREE.Vector3(wp.x, wp.y, wp.z), new THREE.Vector3(0, 0.4, 0), 24, 2.5);
+    if (this.alive) {
+      // a limb torn off at the hip or shoulder is survivable; the trunk split or the head off is not
+      if ((/pelvis|abdomen|chest/.test(part.name) && offCount) || P.abdomen.detached || P.chest.detached) this.kill('torn apart');
+      else if (P.head.detached || (part === P.head && offCount)) this.kill('decapitated');
+      else this.flinch = 1;
+    }
   }
   // Is the belly wall open wide enough near the last hit for the intestines to come out?
   checkSpill() {
@@ -3687,7 +3913,7 @@ class RagdollNPC {
   }
 }
 const _X1 = new THREE.Vector3(1, 0, 0), _gp = new CANNON.Vec3(), _ngv = new CANNON.Vec3(), _ngr = new CANNON.Vec3(), _nsF = new CANNON.Vec3();
-const _handPt = new CANNON.Vec3(0, -0.215, 0), _hipLean = new THREE.Quaternion(), _eul = new THREE.Euler(), _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
+const _shinEnd = new CANNON.Vec3(0, -0.2, 0), _handPt = new CANNON.Vec3(0, -0.215, 0), _hipLean = new THREE.Quaternion(), _eul = new THREE.Euler(), _rq = new THREE.Quaternion(), _ncm = new THREE.Vector3(), _ncv = new THREE.Vector3(), _ns1 = new THREE.Vector3(), _ns2 = new THREE.Vector3(), _nsf = new THREE.Vector3(), _nsl = new THREE.Vector3();
 const shoeMat = new THREE.MeshStandardMaterial({ color: '#25272a', roughness: 0.75 });
 function RoundedShoe([hx, hy, hz]) {   // a box with the toe rounded off
   const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2, 2, 1, 4), a = g.attributes.position;
