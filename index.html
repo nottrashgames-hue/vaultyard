@@ -2914,8 +2914,9 @@ function drawPool(pl) {
   pl.wet = 1 - THREE.MathUtils.smoothstep(age, 8, 60);
   const fade = 1 - THREE.MathUtils.smoothstep(age, 120, 210);
   const r = pl.r * (0.85 + 0.15 * fade);
-  _pq.setFromUnitVectors(_bz, pl.n).multiply(_pq2.setFromAxisAngle(_bz, pl.spin));
-  _pm.compose(_bp.copy(pl.p).addScaledVector(pl.n, 0.0012 + (pl.i % 32) * 0.00003), _pq, _bs.set(r * 2.25, r * 2.1, 1));
+  const sx = pl.sx || 1;   // dragged pools are pulled long in the drag direction
+  _pq.setFromUnitVectors(_bz, pl.n).multiply(_pq2.setFromAxisAngle(_bz, sx > 1.02 ? pl.ang : pl.spin));
+  _pm.compose(_bp.copy(pl.p).addScaledVector(pl.n, 0.0012 + (pl.i % 32) * 0.00003), _pq, _bs.set(r * 2.25 * sx, r * 2.1 / Math.sqrt(sx), 1));
   poolMesh.setMatrixAt(pl.i, _pm);
   poolMesh.setColorAt(pl.i, _pc.setRGB(0.55 + 0.45 * pl.wet, 0.5 + 0.5 * pl.wet, 0.48 + 0.52 * pl.wet));   // dries dark brown
   poolFade.setX(pl.i, fade);
@@ -3030,7 +3031,17 @@ function updateBloodDrag(dt) {
     const cp = ct.p;
     const pl = ct.n.y > 0.7 ? poolAt(cp.x, cp.y, cp.z, 0.03) : null;
     if (pl) {
-      if (sp > 0.03) { const take = Math.min(pl.vol * 0.05, pl.vol * 2 * dt * sp + 0.02); pl.vol -= take; st.carry = Math.min(40, st.carry + take); pl.r = poolRadius(pl.vol); drawPool(pl); }
+      if (sp > 0.03) {
+        const take = Math.min(pl.vol * 0.05, pl.vol * 2 * dt * sp + 0.02); pl.vol -= take; st.carry = Math.min(40, st.carry + take); pl.r = poolRadius(pl.vol);
+        // the pool itself is dragged: it slides a little with the body and is pulled long that way
+        const dx = b.velocity.x / sp, dz = b.velocity.z / sp;
+        const want = Math.atan2(-dz, dx), cur = pl.sx > 1.02 ? pl.ang : want;
+        pl.ang = cur + Math.atan2(Math.sin(want - cur), Math.cos(want - cur)) * Math.min(1, dt * 6);
+        pl.sx = Math.min(2.8, (pl.sx || 1) + sp * dt * 3.2);
+        poolIndex(pl, false); pl.p.x += b.velocity.x * dt * 0.12; pl.p.z += b.velocity.z * dt * 0.12; poolIndex(pl, true);
+        pl.last = simTime;
+        drawPool(pl);
+      }
       st.paint -= dt;
       if (e.vol && st.paint <= 0) {   // lying in it stains the skin where it touches
         st.paint = 0.25;
@@ -3042,9 +3053,16 @@ function updateBloodDrag(dt) {
     if (st.carry > 0.1 && sp > 0.08) {
       if (!st.last) st.last = cp.clone();
       const d = st.last.distanceTo(cp);
-      if (d > 0.035) {
-        const width = e.radius ? Math.min(0.12, e.radius * 2) : e.half ? Math.min(0.12, Math.min(e.half.x, e.half.z) * 2.2) : 0.09;
-        addSmear(st.last, cp, ct.n, width, 0.35 + st.carry * 0.08);
+      if (d > 0.03 + sp * 0.02) {
+        // slow and heavy: a wide, dark smear; fast: thinner, lighter streaks that throw droplets ahead
+        const base = e.radius ? Math.min(0.12, e.radius * 2) : e.half ? Math.min(0.12, Math.min(e.half.x, e.half.z) * 2.2) : 0.09;
+        const width = base * (1.15 - Math.min(0.55, sp * 0.22)) * (0.85 + Math.random() * 0.3);
+        addSmear(st.last, cp, ct.n, width, (0.3 + st.carry * 0.09) * (1 - Math.min(0.45, sp * 0.12)));
+        if (sp > 1.1 && st.carry > 0.6 && Math.random() < 0.6) {
+          const k = 1 + (Math.random() * 3 | 0);
+          for (let i = 0; i < k; i++) spawnDrop(_v3.copy(cp).addScaledVector(ct.n, 0.01), _v4.set(b.velocity.x * (0.6 + Math.random() * 0.5) + (Math.random() - 0.5) * 0.6, 0.6 + Math.random() * 1.2, b.velocity.z * (0.6 + Math.random() * 0.5) + (Math.random() - 0.5) * 0.6), 0.0025 + Math.random() * 0.003);
+          st.carry *= 0.92;
+        }
         st.carry *= Math.exp(-d * 5);                       // blood runs out over ~20 cm of dragging
         st.last.copy(cp);
       }
@@ -3957,9 +3975,12 @@ class RagdollNPC {
     if (part.detached) return;
     const v = part.vol, f = v.f, n = f.length, P0 = v.P[0], P01 = P0 * v.P[1];
     const lab = new Int32Array(n).fill(-1), queue = new Int32Array(n), comps = [];
+    // flesh only a fraction of a voxel thick (what's left of a cut at this mesh resolution) doesn't hold
+    // anything together: connectivity only counts properly solid voxels
+    const thin = v.h * 0.3;
     let total = 0;
     for (let s0 = 0; s0 < n; s0++) {
-      if (f[s0] >= 0 || lab[s0] >= 0) continue;
+      if (f[s0] >= -thin || lab[s0] >= 0) continue;
       const id = comps.length; let qh = 0, qt = 0, cnt = 0;
       const c = { id, n: 0, x: 0, y: 0, z: 0, lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9] };
       lab[s0] = id; queue[qt++] = s0;
@@ -3971,7 +3992,7 @@ class RagdollNPC {
         if (x < c.lo[0]) c.lo[0] = x; if (y < c.lo[1]) c.lo[1] = y; if (z < c.lo[2]) c.lo[2] = z;
         if (x > c.hi[0]) c.hi[0] = x; if (y > c.hi[1]) c.hi[1] = y; if (z > c.hi[2]) c.hi[2] = z;
         const nb = [i > 0 ? o - 1 : -1, i < P0 - 1 ? o + 1 : -1, j > 0 ? o - P0 : -1, j < v.P[1] - 1 ? o + P0 : -1, k > 0 ? o - P01 : -1, k < v.P[2] - 1 ? o + P01 : -1];
-        for (const m of nb) if (m >= 0 && f[m] < 0 && lab[m] < 0) { lab[m] = id; queue[qt++] = m; }
+        for (const m of nb) if (m >= 0 && f[m] < -thin && lab[m] < 0) { lab[m] = id; queue[qt++] = m; }
       }
       c.n = cnt; total += cnt; comps.push(c);
     }
@@ -3993,6 +4014,17 @@ class RagdollNPC {
       if (!torn && this.tearThinLayer(part)) this.checkSplit(part, true);
       return;
     }
+    // the thin skin voxels left out of the labelling go with whichever side they touch (the body's side wins)
+    if (off.length) for (let o = 0; o < n; o++) {
+      if (f[o] >= 0 || lab[o] >= 0) continue;
+      const i = o % P0, j = ((o / P0) | 0) % v.P[1], k = (o / P01) | 0;
+      let toMain = false, toOff = -1;
+      for (const m of [i > 0 ? o - 1 : -1, i < P0 - 1 ? o + 1 : -1, j > 0 ? o - P0 : -1, j < v.P[1] - 1 ? o + P0 : -1, k > 0 ? o - P01 : -1, k < v.P[2] - 1 ? o + P01 : -1]) {
+        if (m < 0 || lab[m] < 0) continue;
+        if (lab[m] === main) toMain = true; else if (off.some(c => c.id === lab[m])) toOff = lab[m];
+      }
+      if (!toMain && toOff >= 0) lab[o] = toOff;
+    }
     // severed pieces
     for (const c of off) {
       const pc = this.makePiece(part, c, lab);
@@ -4009,12 +4041,12 @@ class RagdollNPC {
     for (let k = 0; k < P2; k++) for (let j = 0; j < P1; j++) for (let i = 0; i < P0; i++) {
       const o = v.idx(i, j, k);
       if (v.base[o] < 0) base[j]++;
-      if (v.f[o] < 0) cnt[j]++;
+      if (v.f[o] < -v.h * 0.3) cnt[j]++;   // hair-thin leftovers don't count as holding
     }
     let lo = 0, hi = P1 - 1;
     while (lo < P1 && base[lo] < 8) lo++;
     while (hi > 0 && base[hi] < 8) hi--;
-    let best = -1, bestR = 0.15;
+    let best = -1, bestR = 0.2;
     for (let j = lo + 3; j <= hi - 3; j++) {
       if (base[j] < 20) continue;
       const r = cnt[j] / base[j];
@@ -4352,7 +4384,7 @@ function buildMacheteMesh() {
   sh.quadraticCurveTo(-0.30, MCH.EDGE_Y - 0.012, -0.03, MCH.EDGE_Y + 0.004); sh.lineTo(-0.03, MCH.SPINE_Y);
   const blade = new THREE.ExtrudeGeometry(sh, { depth: 0.004, bevelEnabled: true, bevelThickness: 0.0015, bevelSize: 0.0012, bevelSegments: 1, steps: 1 });
   // the shape is drawn in X/Y with X as length: turn it so length runs along Z
-  blade.rotateY(Math.PI / 2); blade.translate(0.002, 0, 0);
+  blade.rotateY(-Math.PI / 2); blade.translate(0.002, 0, 0);   // shape X (negative, toward the tip) becomes -Z: the blade points away from the handle
   const bm = new THREE.Mesh(blade, steel); g.add(bm);
   const edge = new THREE.Mesh(new THREE.BoxGeometry(0.0022, 0.004, 0.40), edgeM); edge.position.set(0, MCH.EDGE_Y + 0.003, -0.24); edge.rotation.x = -0.02; g.add(edge);
   const guard = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.06, 0.012), black); guard.position.set(0, -0.003, -0.024); g.add(guard);
@@ -4677,14 +4709,22 @@ class Machete {
     if (vd > 0.001) {
       const a = new THREE.Vector3(), c = new THREE.Vector3();
       let prevA = null, prevC = null;
+      // every edge point's path and the strips between them, right out to the skin on both sides (carving
+      // air costs nothing), so the cut has no uncut seams at the edges of the limb
+      const mx = new THREE.Vector3(v.min.x + v.N[0] * v.h, v.min.y + v.N[1] * v.h, v.min.z + v.N[2] * v.h);
+      const inBox = (q) => q.x > v.min.x && q.y > v.min.y && q.z > v.min.z && q.x < mx.x && q.y < mx.y && q.z < mx.z;
       for (let i = 0; i < this.edge.length; i++) {
         this.edgeLocal(g, g.s, i, a); this.edgeLocal(g, s1, i, c);
-        if (v.sampleArr(v.base, c.x, c.y, c.z) < 0 || v.sampleArr(v.base, a.x, a.y, a.z) < 0) {
-          this.carveSlot(v, a.clone(), c.clone());
+        if (inBox(a) || inBox(c)) {
+          this.carveSlot(v, a.clone(), c.clone(), true);
           if (prevA) for (const t of [0.25, 0.5, 0.75]) this.carveSlot(v, prevA.clone().lerp(a, t), prevC.clone().lerp(c, t), true);
           prevA = a.clone(); prevC = c.clone();
         } else prevA = prevC = null;
       }
+      // the middle of the edge's path once more as a counted cut: it bleeds along its length and the
+      // part is checked for coming apart
+      const mi = this.edge.length >> 1;
+      this.carveSlot(v, this.edgeLocal(g, g.s, mi, a).clone(), this.edgeLocal(g, s1, mi, c).clone());
     }
     g.s = s1; g.vd = vd;
     // out the way it came, or clean through: the body lets go
