@@ -2468,6 +2468,19 @@ class DamageVolume {
   updateSurfaceBlood(dt) {
     if (!this.emitters.length && !this.flows.length && !this.beads.length) return;
     this.object.updateWorldMatrix(true, false);
+    // keep the blood on the flesh (checked against the volume's own surface): a bleed point, trickle or
+    // hanging drop left in mid-air where flesh was shot or cut away snaps onto the nearest surface if
+    // there is one within 3 cm, otherwise it goes
+    const onSkin = (pt) => {
+      const f = this.sample(pt.x, pt.y, pt.z);
+      if (f < this.h * 0.4) return true;
+      if (f > 0.03) return false;
+      this.gradient(pt, _n1); pt.addScaledVector(_n1, -f + 0.0004);
+      return this.sample(pt.x, pt.y, pt.z) < this.h * 0.4;
+    };
+    for (let i = this.emitters.length - 1; i >= 0; i--) if (!onSkin(this.emitters[i].p)) this.emitters.splice(i, 1);
+    for (let i = this.flows.length - 1; i >= 0; i--) if (!onSkin(this.flows[i].p)) this.flows.splice(i, 1);
+    for (let i = this.beads.length - 1; i >= 0; i--) if (!onSkin(this.beads[i].p)) this.beads.splice(i, 1);
     const M = this.object.matrixWorld;
     const down = _down.set(0, -1, 0).transformDirection(_dmgInv.copy(M).invert());
     for (let i = this.emitters.length - 1; i >= 0; i--) {
@@ -4315,13 +4328,16 @@ function handMeshContacts(hand, h) {
 // own slot. Swing hard and it cuts until it has slowed to a stop, then it sticks: pull it back out, or
 // drive it on hard enough and it keeps cutting. Cut a limb all the way through and it comes off.
 const MCH = {
-  GRIP: new THREE.Vector3(0, 0, 0.065), RAKE: 30 * DEG,
+  GRIP: new THREE.Vector3(0, -0.002, 0.06), RAKE: 15 * DEG,
   BLADE0: -0.03, BLADE1: -0.47, EDGE_Y: -0.026, SPINE_Y: 0.02, N: 15,
   R_FLESH: 62, R_BONE: 520, C_LAT: 85, C_ALONG: 15, C_PULL: 18, R_STAB: 90, R_SLIDE: 14,   // resistance per sample point (N, N·s/m)
   ARM_F: 400, STICK_V: 0.3, PULL_OUT: 70,
 };
+// Held like a sword, not like a pistol: the handle runs through the fist (where a pistol's grip goes),
+// the blade comes up out of the thumb side and the edge faces forward (where a pistol's barrel points).
 const MCH_ATTACH_Q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(
-  new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, Math.sin(MCH.RAKE), Math.cos(MCH.RAKE)), new THREE.Vector3(0, -Math.cos(MCH.RAKE), Math.sin(MCH.RAKE)))).invert();
+  new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, Math.sin(MCH.RAKE), Math.cos(MCH.RAKE)), new THREE.Vector3(0, -Math.cos(MCH.RAKE), Math.sin(MCH.RAKE)))).invert()
+  .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
 const MCH_ATTACH_P = MCH.GRIP.clone().applyQuaternion(MCH_ATTACH_Q).negate();
 function buildMacheteMesh() {
   const g = new THREE.Group();
@@ -4371,7 +4387,7 @@ class Machete {
   }
   reset() {
     if (this.holder) this.drop();
-    this.unstick();
+    if (this.guide) this.exitGuided();
     this.body.type = CANNON.Body.DYNAMIC;
     this.body.position.set(-4.2, 0.92, 1.95);
     this.body.quaternion.setFromEuler(0, 0, Math.PI / 2);
@@ -4379,7 +4395,7 @@ class Machete {
     for (const e of this.edge) { e.prevW = null; e.inside = false; }
     this.slots = new Map(); this.cutting = 0; this.trigger = 0;
   }
-  get ammoText() { return this.stuck ? 'stuck' : '—'; }
+  get ammoText() { return this.guide ? (this.stuck ? 'stuck' : 'cutting') : '—'; }
   setTrigger() {}
   spawnAmmo() { return null; }
   toWorld(v, out = new THREE.Vector3()) { _cv.set(v.x, v.y, v.z); this.body.pointToWorldFrame(_cv, _cv2); return out.set(_cv2.x, _cv2.y, _cv2.z); }
@@ -4395,7 +4411,7 @@ class Machete {
     this.holder = hand;
     hand.body.type = CANNON.Body.KINEMATIC;
     hand.body.collisionFilterMask = 0;
-    if (!this.stuck) this.placeAtTarget(); else this.placeHand(hand.body);
+    if (!this.guide) this.placeAtTarget(); else this.placeHand(hand.body);
     hand.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.5, 40);
   }
   targetPose(outP, outQ) {
@@ -4411,23 +4427,6 @@ class Machete {
       h.body.velocity.copy(this.body.velocity);
     }
     this.holder = null;
-  }
-  // stuck: held fast by the flesh it is buried in, moving with that body part
-  stick(v) {
-    if (this.stuck) return;
-    const other = v.body;
-    if (other && other.mass > 0) {
-      this.lock = new CANNON.LockConstraint(this.body, other, { maxForce: 4000 });
-      this.lock.collideConnected = false;
-      world.addConstraint(this.lock);
-    } else { this.body.type = CANNON.Body.KINEMATIC; this.body.velocity.setZero(); this.body.angularVelocity.setZero(); }
-    this.stuck = v;
-    this.holder?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(1, 60);
-  }
-  unstick() {
-    if (this.lock) { world.removeConstraint(this.lock); this.lock = null; }
-    if (this.stuck && this.body.type === CANNON.Body.KINEMATIC) this.body.type = CANNON.Body.DYNAMIC;
-    this.stuck = null;
   }
   // The blade against flesh, every physics step. Returns the resistance force (and adds the reaction to
   // the flesh's body). Edge points that move edge-first through solid carve their path.
@@ -4516,7 +4515,7 @@ class Machete {
     }
     this.raw = { F: Fsum, T: Tsum, cut, lat, along, blunt: nb ? blunt.normalize() : null, nb };
     this.otherBody = other;
-    if (newEntry) this.onEntry(newEntry, cut, hitBone);
+    if (newEntry) { this.onEntry(newEntry, cut, hitBone); this.pendingEntry = newEntry; }
     else if (hitBone && !this.boneT) { this.boneT = 0.2; goreSound('bone', b.position, 0.8, { ref: 1.5 }); }
     this.boneT = Math.max(0, (this.boneT || 0) - h);
   }
@@ -4592,79 +4591,155 @@ class Machete {
     }
   }
   // held: the arm drives the blade toward the controller with a limited force; flesh resists
+  // ---- guided cutting ----
+  // Once the edge bites, the flesh holds the blade on the line it came in along: it can only go deeper
+  // (against the flesh and bone in front of the edge) or back out the way it came, and it moves with the
+  // body part it's in. No physics jitter: the depth along that line is the one thing that moves.
+  enterGuided(en) {
+    const v = en.v, b = this.body;
+    v.object.updateWorldMatrix(true, false);
+    const inv = new THREE.Matrix4().copy(v.object.matrixWorld).invert();
+    const ov = v.body;
+    const vrel = new THREE.Vector3(b.velocity.x - (ov ? ov.velocity.x : 0), b.velocity.y - (ov ? ov.velocity.y : 0), b.velocity.z - (ov ? ov.velocity.z : 0));
+    const speed = vrel.length();
+    const dirW = speed > 0.1 ? vrel.clone().divideScalar(speed) : this.dirW(0, -1, 0, new THREE.Vector3());
+    const qv = v.object.getWorldQuaternion(new THREE.Quaternion());
+    this.guide = { v, pos0: new THREE.Vector3(b.position.x, b.position.y, b.position.z).applyMatrix4(inv),
+      q0: qv.clone().invert().multiply(new THREE.Quaternion(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w)),
+      dir: dirW.transformDirection(inv).clone(), s: 0, vd: speed, clear: 0, boneT: 0, organs: new Set() };
+    b.type = CANNON.Body.KINEMATIC; b.angularVelocity.setZero();
+    this.pushT = 0;
+  }
+  exitGuided() {
+    const g = this.guide; if (!g) return;
+    this.guide = null;
+    const b = this.body, ov = g.v.body;
+    b.type = CANNON.Body.DYNAMIC;
+    const dW = g.dir.clone().transformDirection(g.v.object.matrixWorld);
+    b.velocity.set(dW.x * g.vd + (ov ? ov.velocity.x : 0), dW.y * g.vd + (ov ? ov.velocity.y : 0), dW.z * g.vd + (ov ? ov.velocity.z : 0));
+    b.angularVelocity.setZero();
+    for (const e of this.edge) { e.prevW = null; e.inside = false; }
+  }
+  get stuck() { return this.guide && Math.abs(this.guide.vd) < 0.05 ? this.guide.v : null; }
+  // the blade's edge points, in the volume's own frame, with the blade at depth s along the line
+  edgeLocal(g, sDepth, i, out) { return out.copy(this.edge[i].l).applyQuaternion(g.q0).add(g.pos0).addScaledVector(g.dir, sDepth); }
+  guidedStep(h, held) {
+    const g = this.guide, v = g.v, b = this.body, m = b.mass;
+    if (!damageables.includes(v)) { this.exitGuided(); return; }   // what it was in is gone (reset)
+    v.object.updateWorldMatrix(true, false);
+    const M = v.object.matrixWorld, inv = new THREE.Matrix4().copy(M).invert();
+    const dW = g.dir.clone().transformDirection(M);
+    // forces along the line: gravity, and the arm (a servo toward where the hand wants the blade)
+    let F = -m * GRAVITY * dW.y, Farm = 0;
+    if (held) {
+      this.targetPose(_tp, _tq);
+      const sT = _tp.clone().applyMatrix4(inv).sub(g.pos0).dot(g.dir), ahead = sT - g.s;
+      // a deliberate push (hand held well past the blade along the line for a moment) gets the whole arm
+      this.pushT = ahead > 0.08 ? (this.pushT || 0) + h : 0;
+      const cap = ahead < 0 ? MCH.ARM_F : this.pushT > 0.4 ? MCH.ARM_F : 130;
+      Farm = Math.max(-cap, Math.min(cap, (ahead * GUN_GAIN / h - g.vd) * GUN_SERVO * m / h));
+      F += Farm;
+      player.force.x -= dW.x * Farm; player.force.y -= dW.y * Farm + (m + this.holder.body.mass) * GRAVITY; player.force.z -= dW.z * Farm;
+      // yanked well off the line (more than 35 cm): the hand tears it out sideways
+      const off = _tp.clone().applyMatrix4(inv).sub(g.pos0).addScaledVector(g.dir, -sT).length();
+      if (off > 0.35 && g.s < 0.12) { g.vd = Math.min(g.vd, 0); this.exitGuided(); return; }
+    }
+    let vd = g.vd + F * h / m;
+    // what's in front of the edge at the next depth: uncut flesh resists, bone far more
+    const sNext = g.s + Math.max(0, vd) * h, l = new THREE.Vector3();
+    let R = 0, nIn = 0, bone = false;
+    for (let i = 0; i < this.edge.length; i++) {
+      this.edgeLocal(g, sNext, i, l);
+      if (v.sampleArr(v.base, l.x, l.y, l.z) >= 0) continue;
+      const f = v.sample(l.x, l.y, l.z), slot = this.inSlot(v, l);
+      if (f >= 0.02 || (slot && f >= -v.h * 0.15)) { if (f < 0.02) nIn++; continue; }
+      nIn++;
+      if (slot) continue;
+      const bn = v.boneSdf && v.boneSdf(l.x, l.y, l.z) < 0;
+      R += bn ? MCH.R_BONE : MCH.R_FLESH; if (bn) bone = true;
+      // reaching an organ counts like a shot through it (brain, heart: fatal)
+      if (v.organs && vd > 0) for (const o of v.organs) if (!g.organs.has(o.name) && o.sdf(l.x, l.y, l.z) < 0) {
+        g.organs.add(o.name);
+        const part = v.npc?.parts[v.part];
+        if (part) v.npc.onHit(part, { entryLocal: l.clone(), exitPoint: null, organs: [o.name], channel: 0.08 });
+      }
+    }
+    const before = vd;
+    if (vd > 0) vd = Math.max(0, vd - R * h / m);
+    else vd = Math.min(0, vd + nIn * MCH.R_SLIDE * h / m);
+    // the flesh takes what it stopped: the body part is shoved along the line
+    const taken = (before - vd) * m;
+    if (v.body && v.body.mass > 0 && taken) v.body.applyImpulse(new CANNON.Vec3(dW.x * taken, dW.y * taken, dW.z * taken), new CANNON.Vec3(b.position.x - v.body.position.x, b.position.y - v.body.position.y, b.position.z - v.body.position.z));
+    if (bone && g.boneT <= 0 && vd < 0.5) { g.boneT = 0.3; goreSound('bone', b.position, 0.8, { ref: 1.5 }); }
+    g.boneT -= h;
+    // carve the edge's path as it goes deeper, one continuous cut
+    const s1 = g.s + vd * h;
+    if (vd > 0.001) {
+      const a = new THREE.Vector3(), c = new THREE.Vector3();
+      let prevA = null, prevC = null;
+      for (let i = 0; i < this.edge.length; i++) {
+        this.edgeLocal(g, g.s, i, a); this.edgeLocal(g, s1, i, c);
+        if (v.sampleArr(v.base, c.x, c.y, c.z) < 0 || v.sampleArr(v.base, a.x, a.y, a.z) < 0) {
+          this.carveSlot(v, a.clone(), c.clone());
+          if (prevA) for (const t of [0.25, 0.5, 0.75]) this.carveSlot(v, prevA.clone().lerp(a, t), prevC.clone().lerp(c, t), true);
+          prevA = a.clone(); prevC = c.clone();
+        } else prevA = prevC = null;
+      }
+    }
+    g.s = s1; g.vd = vd;
+    // out the way it came, or clean through: the body lets go
+    g.clear = nIn ? 0 : g.clear + 1;
+    if (g.s < -0.01 || (g.clear > 2 && g.s > 0.02)) { this.exitGuided(); return; }
+    // pose: on the line, moving with the body part
+    const pw = g.pos0.clone().addScaledVector(g.dir, g.s).applyMatrix4(M);
+    const qw = v.object.getWorldQuaternion(new THREE.Quaternion()).multiply(g.q0);
+    b.position.set(pw.x, pw.y, pw.z); b.quaternion.set(qw.x, qw.y, qw.z, qw.w);
+    const ov = v.body;
+    b.velocity.set(dW.x * vd + (ov ? ov.velocity.x : 0), dW.y * vd + (ov ? ov.velocity.y : 0), dW.z * vd + (ov ? ov.velocity.z : 0));
+    if (ov) b.angularVelocity.copy(ov.angularVelocity); else b.angularVelocity.setZero();
+  }
   driveHeld(h, tvx, tvy, tvz) {
     const b = this.body;
+    if (this.guide) { this.guidedStep(h, true); this.placeHand(this.holder.body); return; }
     this.targetPose(_tp, _tq);
     const dx = _tp.x - b.position.x, dy = _tp.y - b.position.y, dz = _tp.z - b.position.z;
-    if (!this.stuck && (this.holder.needsSnap || dx * dx + dy * dy + dz * dz > HAND_SNAP_DIST * HAND_SNAP_DIST)) {
+    if (this.holder.needsSnap || dx * dx + dy * dy + dz * dz > HAND_SNAP_DIST * HAND_SNAP_DIST) {
       this.placeAtTarget(); this.holder.needsSnap = false; return;
     }
-    // what the arm wants: a velocity servo, expressed as a capped force
+    // free swing: a velocity servo with the arm's whole strength
     const wvx = tvx + dx / h * GUN_GAIN, wvy = tvy + dy / h * GUN_GAIN, wvz = tvz + dz / h * GUN_GAIN;
     _f.set((wvx - b.velocity.x) * b.mass / h * GUN_SERVO, (wvy - b.velocity.y) * b.mass / h * GUN_SERVO, (wvz - b.velocity.z) * b.mass / h * GUN_SERVO);
-    // a free swing gets the whole arm behind it; once buried, it's the wrist driving a stuck blade, and
-    // only shoving the controller well past it pushes harder
-    const cutDir = this.dirW(0, -1, 0, _mt2), ahead = dx * cutDir.x + dy * cutDir.y + dz * cutDir.z;
-    // a deliberate push: the hand held well past the blade, along the cut, for a moment (a swing's
-    // follow-through passes in a fraction of a second and doesn't count)
-    this.pushT = (this.inFlesh || this.stuck) && ahead > 0.08 ? (this.pushT || 0) + h : 0;
-    const shove = this.pushT > 0.4;
-    clampLen(_f, this.inFlesh && !shove ? 130 : MCH.ARM_F);
-    if (this.stuck) {
-      // stuck in flesh: it only comes free when the arm pulls it back out, or drives it on harder
-      // than the flesh in front of the edge can resist
-      const cut = this.dirW(0, -1, 0, _mt2), push = _f.x * cut.x + _f.y * cut.y + _f.z * cut.z;
-      const spring = Math.hypot(dx, dy, dz) * 2200;
-      const sv = this.stuck, bone = !!sv.boneSdf && this.edge.some(e => { if (!e.inside || !e.prevW) return false; const l = localOf(sv, e.prevW, new THREE.Vector3()); return sv.boneSdf(l.x, l.y, l.z) < 0.004; });
-      const resist = this.edge.filter(e => e.inside).length * (bone ? MCH.R_BONE : MCH.R_FLESH);
-      if (-push > MCH.PULL_OUT && spring > MCH.PULL_OUT) this.unstick();
-      else if (shove && push > resist * 0.8 && spring > resist * 0.8) this.unstick();
-      else { this.placeHand(this.holder.body); return; }
-    }
-    this.bladeForces(h);
+    clampLen(_f, MCH.ARM_F);
     const carry = (b.mass + this.holder.body.mass) * GRAVITY;
     player.force.x -= _f.x; player.force.y -= _f.y + carry; player.force.z -= _f.z;
     b.velocity.x += _f.x * h / b.mass;
     b.velocity.y += _f.y * h / b.mass + GRAVITY * h;
     b.velocity.z += _f.z * h / b.mass;
-    // rotation follows the wrist, much less freely once the blade is buried
     _q1.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w).invert();
     _q2.copy(_tq).multiply(_q1);
     if (_q2.w < 0) { _q2.x = -_q2.x; _q2.y = -_q2.y; _q2.z = -_q2.z; _q2.w = -_q2.w; }
     const angle = 2 * Math.acos(Math.min(1, _q2.w)), s = Math.sqrt(Math.max(0, 1 - _q2.w * _q2.w));
     let wx = 0, wy = 0, wz = 0;
     if (s > 1e-5) { const w = Math.min(GUN_MAX_W, angle / h); wx = _q2.x / s * w; wy = _q2.y / s * w; wz = _q2.z / s * w; }
-    const k = this.inFlesh ? (this.pushT > 0.4 ? 0.35 : 0.1) : 0.85;
-    b.angularVelocity.x += (wx - b.angularVelocity.x) * k;
-    b.angularVelocity.y += (wy - b.angularVelocity.y) * k;
-    b.angularVelocity.z += (wz - b.angularVelocity.z) * k;
-    this.resist(h);   // after the arm's push and the wrist's turn
-    this.checkStick();
+    b.angularVelocity.set(wx, wy, wz);
+    // the edge biting this step hands over to the guided cut; the flat and spine just push
+    this.pendingEntry = null;
+    this.bladeForces(h);
+    if (this.pendingEntry && this.cutting) { this.enterGuided(this.pendingEntry); this.guidedStep(h, true); }
+    else this.resist(h);
     this.placeHand(this.holder.body);
   }
-  checkStick() {
-    const b = this.body;
-    if (this.stuck || !this.inFlesh) { this.slowT = 0; return; }
-    const sp = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
-    const rel = this.inFlesh.body ? Math.hypot(b.velocity.x - this.inFlesh.body.velocity.x, b.velocity.y - this.inFlesh.body.velocity.y, b.velocity.z - this.inFlesh.body.velocity.z) : sp;
-    const deep = this.edge.filter(e => e.inside).length;
-    const spin = Math.hypot(b.angularVelocity.x, b.angularVelocity.y, b.angularVelocity.z) * 0.25;   // the blade's middle, turning
-    this.slowT = rel + spin < MCH.STICK_V && deep >= 1 ? (this.slowT || 0) + 1 : 0;
-    if (this.slowT > 6) this.stick(this.inFlesh);
-  }
-  // not held: free physics, still cutting what it falls or is thrown into
+  // not held: free physics, still cutting what it falls or is thrown into (and held fast once in)
   preStep(h) {
     if (this.holder) return;
-    if (this.stuck) {
-      if (this.stuck.npc && this.stuck.body && !world.bodies.includes(this.stuck.body)) this.unstick();
-      return;
-    }
+    if (this.guide) { this.guidedStep(h, false); return; }
     const b = this.body;
     b.velocity.y -= GRAVITY * h;   // count this step's gravity before the flesh holds it (the world adds it back)
+    this.pendingEntry = null;
     this.bladeForces(h);
+    if (this.pendingEntry && this.cutting) { b.velocity.y += GRAVITY * h; this.enterGuided(this.pendingEntry); this.guidedStep(h, false); return; }
     this.resist(h);
     b.velocity.y += GRAVITY * h;
-    this.checkStick();
   }
   update(dt) {
     if (this.holder && !this.holder.active) this.drop();
