@@ -20,7 +20,7 @@ See CREDITS.md for asset licenses.
 Wounds on damage volumes paint a blood trail down the surface and drip from its lowest point, slowing as they clot. Impacts spray drops; every drop that lands on static geometry leaves a splat that stays (instanced, up to 3000).
 
 ## Shotgun
-Pump-action 12 gauge on the second bench, modelled from primitives. Grip it to pick it up by the stock, grip the forend with the other hand to aim two-handed and pump. Push shells into the port under the receiver (6 in the tube); the pouch gives shells while you hold it. Nine pellets per shot; pellets that land close together tear chunks of flesh out that fall as physics pieces.
+Pump-action 12 gauge on the second bench: Quaternius's low-poly Shotgun_3 (CC0) with its wooden forend split out as the pump, in the same flat-shaded wood and metal as the M1911. Grip it to pick it up by the stock, grip the forend with the other hand to aim two-handed and pump. Push shells into the port under the receiver (6 in the tube); the pouch gives shells while you hold it. Nine pellets per shot; pellets that land close together tear chunks of flesh out that fall as physics pieces.
 
 ## Gore (direction: GREYMEAT by Lev Filippov)
 The flesh target has layers (skin, fat, muscle) over a bone core. Wounds are wet, entries get an abrasion collar, bruises spread and darken over a couple of minutes and yellow at the edges. Blood runs down the skin as surface parcels and only drips when it gathers on an overhang. Drops are 2D sprites; splats stay. Push a red RESET RANGE button (by the benches, or at spawn) to reset everything.
@@ -43,3 +43,6 @@ After every hit the damaged part's flesh is checked for pieces that are no longe
 
 ### Shotgun loading
 Bring a shell up anywhere under the receiver or the front of the tube and it goes in, in any orientation.
+
+### Blood pools
+Drops that land on a floor collect into pools that grow with the blood reaching them and run together when they touch, so a long bleed is a handful of puddles instead of thousands of splats. Anything dragged through a pool (bodies, severed parts, torn chunks, guts) picks blood up, stains, and smears it along behind; walk through one and you leave footprints. Blood dries darker after about a minute and fades away after three or four.

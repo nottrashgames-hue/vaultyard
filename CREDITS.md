@@ -4,6 +4,7 @@
 |---|---|---|---|
 | Hand models (`models/hands.js`, generic-hand left/right) | Amazon, WebXR Input Profiles | MIT (see `models/LICENSE.md`) | https://github.com/immersive-web/webxr-input-profiles |
 | M1911 model (`models/m1911.js`) | Emi @ Violence | CC0 | https://violencelat.itch.io/low-poly-weapon-models |
+| Shotgun model (Shotgun_3 from the Ultimate Gun Pack, converted into `index.html`) | Quaternius | CC0 | https://opengameart.org/content/low-poly-guns-pack |
 | Gunshot recording (`sfx/gunshot.wav`, trimmed from `cz.wav`) | Vincent Sevedge | CC-BY 3.0 (license file shipped with the pack; the OpenGameArt page lists CC0) | https://opengameart.org/content/gunshot-sounds |
 | Handling sounds (`sfx/handling.wav`) | zer0_sol | CC0 | https://opengameart.org/content/handgun-reload-sound-effect |
 | Flesh hits (`sfx/gore/hits.wav`, trimmed and joined from Fleshy Fight Sounds) | Will Leamon ("Additional Sound FX by Will Leamon") | OGA-BY 3.0 | https://opengameart.org/content/fleshy-fight-sounds |
