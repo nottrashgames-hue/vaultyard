@@ -2257,7 +2257,7 @@ class DamageVolume {
       this.buildChunk(cx, cy, cz);
   }
   reset() {
-    this.f.set(this.base); this.blood.fill(0);
+    this.f.set(this.base); this.blood.fill(0); this.cutMask = null;
     this.emitters.length = this.flows.length = this.beads.length = this.bruises.length = 0;
     this.dirty.clear();
     this.rebuildAll();
@@ -2429,6 +2429,20 @@ class DamageVolume {
        _hi.set(Math.max(a.x, b.x) + pad, Math.max(a.y, b.y) + pad, Math.max(a.z, b.z) + pad));
   }
   carveSphere(p, r) { this.carveCapsule(p, p, r); }
+  // mark the voxels around a blade's cut (used to decide whether a part has really come apart)
+  markCut(a, b, r) {
+    const h = this.h, mn = this.min;
+    if (!this.cutMask) this.cutMask = new Uint8Array(this.f.length);
+    const i0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - r - mn.x) / h)), i1 = Math.min(this.N[0], Math.ceil((Math.max(a.x, b.x) + r - mn.x) / h));
+    const j0 = Math.max(0, Math.floor((Math.min(a.y, b.y) - r - mn.y) / h)), j1 = Math.min(this.N[1], Math.ceil((Math.max(a.y, b.y) + r - mn.y) / h));
+    const k0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - r - mn.z) / h)), k1 = Math.min(this.N[2], Math.ceil((Math.max(a.z, b.z) + r - mn.z) / h));
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z, ab2 = abx * abx + aby * aby + abz * abz || 1e-9;
+    for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const x = mn.x + i * h, y = mn.y + j * h, z = mn.z + k * h;
+      let t = ((x - a.x) * abx + (y - a.y) * aby + (z - a.z) * abz) / ab2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      if (Math.hypot(x - a.x - abx * t, y - a.y - aby * t, z - a.z - abz * t) < r) this.cutMask[this.idx(i, j, k)] = 1;
+    }
+  }
   paintBlood(c, r, amount) {
     const h = this.h, mn = this.min;
     const i0 = Math.max(0, Math.floor((c.x - r - mn.x) / h)), i1 = Math.min(this.N[0], Math.ceil((c.x + r - mn.x) / h));
@@ -2641,6 +2655,9 @@ class DamageVolume {
       goreSound('bullet', info.entry, 1.1, { ref: 2, reverb: 0.15 });
       if (hitBone) goreSound('bone', info.entry, 0.7, { ref: 1.5 });
       if (exited) goreSound('splat', info.exitPoint, 0.6, { ref: 1.2 });
+      const mist = (pt, d, n, sp) => { for (let i = 0; i < n; i++) spawnDrop(pt, new THREE.Vector3(d.x * sp * (0.4 + Math.random()) + (Math.random() - 0.5) * sp * 0.6, d.y * sp * (0.4 + Math.random()) + (Math.random() - 0.5) * sp * 0.6, d.z * sp * (0.4 + Math.random()) + (Math.random() - 0.5) * sp * 0.6), 0.0011 + Math.random() * 0.0013); };
+      mist(info.entry, worldD.clone().negate(), 6, 1.6);
+      if (exited) mist(info.exitPoint, worldD, 18, 4.5);
     }
     this.onHit?.(info);
     return info;
@@ -3528,9 +3545,11 @@ class RagdollNPC {
     this.pieces.length = 0;
     for (const j of this.joints) if (j.cur !== j.c) { if (j.cur) world.removeConstraint(j.cur); world.addConstraint(j.c); j.cur = j.c; j.rebound = false; }
     for (const d of this.drives) if (d.cut) { world.addConstraint(d.m); d.cut = false; }
+    for (const hg of this.hinges || []) world.removeConstraint(hg.c);
+    this.hinges = []; this.spurts = []; this.beat = 0;
     this.limbLost = { legL: false, legR: false, armL: false, armR: false };
     for (const p of this.list) {
-      p.detached = false; p.splitCheck = false;
+      p.detached = false; p.splitCheck = false; p.hinge = null;
       const b = p.body, pos = this.restPos(p.def, _v3);
       b.position.set(pos.x, pos.y, pos.z); b.quaternion.set(this.q0.x, this.q0.y, this.q0.z, this.q0.w);
       b.velocity.setZero(); b.angularVelocity.setZero();
@@ -3890,6 +3909,7 @@ class RagdollNPC {
     }
     if (this.fallThud && pel.position.y < 0.32) { this.fallThud = false; goreSound('body', pel.position, 0.9, { ref: 2, rate: 0.8 }); }
     for (const p of this.list) if (p.splitCheck) { p.splitCheck = false; this.checkSplit(p); }
+    this.pulse(dt);
     if (this.spill) this.checkSpill();
     for (const g of this.guts) g.update(dt);
   }
@@ -3953,6 +3973,29 @@ class RagdollNPC {
     if (part.name === 'abdomen') this.spill = { near: mid.clone(), far: null };
     if (this.alive && part.name === 'head') this.kill('brain');
   }
+  // The heart: faster as blood is lost (shock), weaker with every beat it has less to pump; it stops
+  // when he dies. Each beat drives a jet out of every open artery in a stump.
+  pulse(dt) {
+    if (!this.alive || !this.spurts.length) return;
+    const lost = this.bloodLost / NPC_BLOOD_TOTAL;
+    this.beat += dt * (1.15 + lost * 2.2);
+    if (this.beat < 1) return;
+    this.beat -= 1;
+    const pump = Math.max(0, 1 - lost * 1.6) * Math.min(1, this.tone + 0.4);
+    for (let i = this.spurts.length - 1; i >= 0; i--) {
+      const sp = this.spurts[i], part = sp.part;
+      const k = pump * Math.exp(-(simTime - sp.born) / 45);
+      if (k < 0.04 || part.detached) { this.spurts.splice(i, 1); continue; }
+      part.vol.object.updateWorldMatrix(true, false);
+      const M = part.vol.object.matrixWorld;
+      const p = sp.local.clone().applyMatrix4(M), d = sp.dir.clone().transformDirection(M), bv = part.body.velocity;
+      const jets = 4 + Math.round(9 * k);
+      for (let j = 0; j < jets; j++) {
+        const sp0 = (1.3 + 2.4 * k) * (0.7 + Math.random() * 0.5);
+        spawnDrop(p, new THREE.Vector3(d.x * sp0 + bv.x + (Math.random() - 0.5) * 0.35, d.y * sp0 + bv.y + (Math.random() - 0.5) * 0.35, d.z * sp0 + bv.z + (Math.random() - 0.5) * 0.35), 0.003 + Math.random() * 0.0035);
+      }
+    }
+  }
   // ---- dismemberment ----
   // After damage, the part's voxels are split into connected pieces. The piece that holds the joint
   // toward the body stays; any other sizeable piece becomes its own rigid body with its own flesh, and
@@ -3973,14 +4016,16 @@ class RagdollNPC {
   }
   checkSplit(part, torn = false) {
     if (part.detached) return;
+    if (part.hinge) this.checkHinge(part);
     const v = part.vol, f = v.f, n = f.length, P0 = v.P[0], P01 = P0 * v.P[1];
     const lab = new Int32Array(n).fill(-1), queue = new Int32Array(n), comps = [];
     // flesh only a fraction of a voxel thick (what's left of a cut at this mesh resolution) doesn't hold
     // anything together: connectivity only counts properly solid voxels
-    const thin = v.h * 0.3;
+    const thin = v.h * 0.3, deep = v.h * 0.9, cm = v.cutMask;
+    const holds = (o) => f[o] < -(cm && cm[o] ? deep : thin);   // along a cut, the leftover thread at any angle doesn't hold
     let total = 0;
     for (let s0 = 0; s0 < n; s0++) {
-      if (f[s0] >= -thin || lab[s0] >= 0) continue;
+      if (!holds(s0) || lab[s0] >= 0) continue;
       const id = comps.length; let qh = 0, qt = 0, cnt = 0;
       const c = { id, n: 0, x: 0, y: 0, z: 0, lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9] };
       lab[s0] = id; queue[qt++] = s0;
@@ -3992,7 +4037,7 @@ class RagdollNPC {
         if (x < c.lo[0]) c.lo[0] = x; if (y < c.lo[1]) c.lo[1] = y; if (z < c.lo[2]) c.lo[2] = z;
         if (x > c.hi[0]) c.hi[0] = x; if (y > c.hi[1]) c.hi[1] = y; if (z > c.hi[2]) c.hi[2] = z;
         const nb = [i > 0 ? o - 1 : -1, i < P0 - 1 ? o + 1 : -1, j > 0 ? o - P0 : -1, j < v.P[1] - 1 ? o + P0 : -1, k > 0 ? o - P01 : -1, k < v.P[2] - 1 ? o + P01 : -1];
-        for (const m of nb) if (m >= 0 && f[m] < -thin && lab[m] < 0) { lab[m] = id; queue[qt++] = m; }
+        for (const m of nb) if (m >= 0 && holds(m) && lab[m] < 0) { lab[m] = id; queue[qt++] = m; }
       }
       c.n = cnt; total += cnt; comps.push(c);
     }
@@ -4012,6 +4057,7 @@ class RagdollNPC {
       if (crumbs.length) { for (let o = 0; o < n; o++) if (lab[o] >= 0 && crumbs.some(c => c.id === lab[o])) f[o] = v.h * 1.5; v.rebuildAll(); }
       // a part shot down to a thin strip can't hold its own weight: the strip tears
       if (!torn && this.tearThinLayer(part)) this.checkSplit(part, true);
+      else if (!torn) this.maybeHinge(part);
       return;
     }
     // the thin skin voxels left out of the labelling go with whichever side they touch (the body's side wins)
@@ -4058,6 +4104,80 @@ class RagdollNPC {
     }
     part.lastHit = new THREE.Vector3(0, v.min.y + best * v.h, 0);
     return true;
+  }
+  // ---- hinges ----
+  // A limb (or the neck) cut most of the way through but not off hangs from what's left: the far side
+  // becomes its own body on a loose joint at the remaining flesh, so it swings and flops at the cut.
+  // Cut the rest and it comes off.
+  layerStats(part) {
+    const v = part.vol, P0 = v.P[0], P1 = v.P[1], P2 = v.P[2];
+    const cnt = new Int32Array(P1), base = new Int32Array(P1);
+    for (let k = 0; k < P2; k++) for (let j = 0; j < P1; j++) for (let i = 0; i < P0; i++) {
+      const o = v.idx(i, j, k);
+      if (v.base[o] < 0) base[j]++;
+      if (v.f[o] < -v.h * 0.3) cnt[j]++;
+    }
+    let lo = 0, hi = P1 - 1;
+    while (lo < P1 && base[lo] < 8) lo++;
+    while (hi > 0 && base[hi] < 8) hi--;
+    return { cnt, base, lo, hi };
+  }
+  maybeHinge(part) {
+    if (part.hinge || !/thigh|shin|upperArm|forearm|head/.test(part.name)) return;
+    const { cnt, base, lo, hi } = this.layerStats(part);
+    let best = -1, bestR = 0.45;
+    for (let j = lo + 3; j <= hi - 3; j++) {
+      if (base[j] < 20) continue;
+      const r = cnt[j] / base[j];
+      if (r < bestR) { bestR = r; best = j; }
+    }
+    if (best >= 0) this.makeHinge(part, best);
+  }
+  makeHinge(part, jl) {
+    const v = part.vol, f = v.f, n = f.length, P0 = v.P[0], P01 = P0 * v.P[1], h = v.h;
+    const parentJ = this.joints.find(j => j.cur && !j.rebound && j.B === part);
+    const cutY = v.min.y + jl * h, mainBelow = parentJ ? parentJ.pB.y < cutY : true;
+    // the far side of the cut layer is the hanging piece; the bridge is what's left in the cut layer
+    const lab = new Int32Array(n).fill(-1);
+    const c = { id: 1, n: 0, x: 0, y: 0, z: 0, lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9] };
+    const bridge = new THREE.Vector3(); let nb = 0;
+    for (let o = 0; o < n; o++) {
+      if (f[o] >= 0) continue;
+      const i = o % P0, j = ((o / P0) | 0) % v.P[1], k = (o / P01) | 0;
+      const x = v.min.x + i * h, y = v.min.y + j * h, z = v.min.z + k * h;
+      if (j === jl && f[o] < -h * 0.3) { bridge.x += x; bridge.y += y; bridge.z += z; nb++; }
+      const far = mainBelow ? j >= jl : j < jl;
+      if (!far) { lab[o] = 0; continue; }
+      lab[o] = 1; c.n++; c.x += x; c.y += y; c.z += z;
+      if (x < c.lo[0]) c.lo[0] = x; if (y < c.lo[1]) c.lo[1] = y; if (z < c.lo[2]) c.lo[2] = z;
+      if (x > c.hi[0]) c.hi[0] = x; if (y > c.hi[1]) c.hi[1] = y; if (z > c.hi[2]) c.hi[2] = z;
+    }
+    if (c.n < 30 || !nb) return;
+    bridge.divideScalar(nb);
+    part.lastHit = part.lastHit || bridge.clone();
+    const js = this.joints.filter(j => j.cur && !j.rebound && j !== parentJ && (j.A === part || j.B === part));
+    const pc = this.makePiece(part, c, lab);
+    for (const j of js) if (this.pivotLabel(v, j.A === part ? j.pA : j.pB, lab) === 1) this.rebind(j, part, pc);
+    for (let o = 0; o < n; o++) if (lab[o] === 1) f[o] = h * 1.5;
+    v.rebuildAll();
+    const ax = new CANNON.Vec3(0, mainBelow ? 1 : -1, 0);
+    const hc = new CANNON.ConeTwistConstraint(part.body, pc.body, { pivotA: new CANNON.Vec3(bridge.x, bridge.y, bridge.z),
+      pivotB: new CANNON.Vec3(bridge.x - pc.mid.x, bridge.y - pc.mid.y, bridge.z - pc.mid.z), axisA: ax, axisB: ax, angle: 1.5, twistAngle: 0.9, collideConnected: false });
+    world.addConstraint(hc);
+    pc.body.angularDamping = 0.5;
+    part.hinge = { c: hc, pc, layer: jl, mainBelow, base: this.layerStats(part).base[jl] || 1 };
+    this.hinges.push(part.hinge);
+    this.afterSever(part, 1, []);
+  }
+  checkHinge(part) {
+    const hg = part.hinge, { cnt, base } = this.layerStats(part);
+    const j = hg.mainBelow ? hg.layer - 1 : hg.layer + 1;
+    const r = (cnt[j] || 0) / Math.max(1, base[j] || hg.base);
+    if (r > 0.1) return;
+    world.removeConstraint(hg.c); part.hinge = null;   // the last of it is cut: it drops off
+    const wp = part.body.position;
+    goreSound('tear', wp, 1, { ref: 2 });
+    bloodSpray(new THREE.Vector3(wp.x, wp.y, wp.z), new THREE.Vector3(0, -0.5, 0), 14, 1.5);
   }
   makePiece(part, c, lab) {
     const v = part.vol, def = part.def, h = v.h;
@@ -4137,6 +4257,10 @@ class RagdollNPC {
     }
     // the stump bleeds hard: arteries in a limb, survivable if it's held or clots; not so the trunk or neck
     if (!part.detached && part.lastHit) {
+      // an artery in the stump spurts with each heartbeat, away from the body along the cut
+      const pc = this.pieces.filter(q => q.part === part).at(-1);
+      const out = pc ? pc.mid.clone().sub(part.lastHit) : part.vol.baseNormal(part.lastHit, new THREE.Vector3());
+      if (out.lengthSq() > 1e-8) this.spurts.push({ part, local: part.lastHit.clone(), dir: out.normalize(), born: simTime });
       part.vol.addWound(part.lastHit, 2.4, 24, 'blast', 0.02);
       part.vol.addWound(part.lastHit.clone().add(new THREE.Vector3(0.01, -0.01, 0.005)), 1.6, 24, 'blast', 0.02);
       this.addWoundSpot(part, part.lastHit);
@@ -4392,8 +4516,10 @@ function buildMacheteMesh() {
   for (const z of [0.01, 0.048, 0.086]) { const r = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.03, 8), steel); r.rotation.z = Math.PI / 2; r.position.set(0, -0.002, z); g.add(r); }
   const pommel = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.012), black); pommel.position.set(0, -0.004, 0.118); g.add(pommel);
   g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.userData.bloodMats = [[steel, steel.color.clone()], [edgeM, edgeM.color.clone()]];
   return g;
 }
+const _bloodSteel = new THREE.Color().setRGB(0.09, 0.006, 0.004);
 const _mt1 = new THREE.Vector3(), _mt2 = new THREE.Vector3(), _mt3 = new THREE.Vector3(), _mtq = new THREE.Quaternion();
 class Machete {
   constructor() {
@@ -4420,6 +4546,8 @@ class Machete {
   reset() {
     if (this.holder) this.drop();
     if (this.guide) this.exitGuided();
+    this.blood = 0;
+    for (const [m, c0] of this.group.userData.bloodMats) { m.color.copy(c0); m.roughness = 0.42; }
     this.body.type = CANNON.Body.DYNAMIC;
     this.body.position.set(-4.2, 0.92, 1.95);
     this.body.quaternion.setFromEuler(0, 0, Math.PI / 2);
@@ -4596,6 +4724,8 @@ class Machete {
   }
   carveSlot(v, a, c, fill = false) {
     v.carveCapsule(a, c, Math.max(0.0035, v.h * 0.6));
+    v.markCut?.(a, c, v.h * 2.2);
+    this.blood = Math.min(1, (this.blood || 0) + 0.004);
     v.urgent = true;
     let segs = this.slots.get(v); if (!segs) this.slots.set(v, segs = []);
     segs.push([a.clone(), c.clone()]); if (segs.length > 2400) segs.shift();
@@ -4676,6 +4806,7 @@ class Machete {
       const off = _tp.clone().applyMatrix4(inv).sub(g.pos0).addScaledVector(g.dir, -sT).length();
       if (off > 0.35 && g.s < 0.12) { g.vd = Math.min(g.vd, 0); this.exitGuided(); return; }
     }
+    if (held) this.steer(g, h, v);
     let vd = g.vd + F * h / m;
     // what's in front of the edge at the next depth: uncut flesh resists, bone far more
     const sNext = g.s + Math.max(0, vd) * h, l = new THREE.Vector3();
@@ -4738,6 +4869,33 @@ class Machete {
     b.velocity.set(dW.x * vd + (ov ? ov.velocity.x : 0), dW.y * vd + (ov ? ov.velocity.y : 0), dW.z * vd + (ov ? ov.velocity.z : 0));
     if (ov) b.angularVelocity.copy(ov.angularVelocity); else b.angularVelocity.setZero();
   }
+  // Turning the wrist slowly while the blade is in: it pivots within its own plane (about the axis
+  // across the blade), the line it cuts along turns with it, and the edge carves the sweep - a curved
+  // cut. Only slow turns: the deeper it is, the slower it will go, and turning spine-first is half speed.
+  steer(g, h, v) {
+    const qv = v.object.getWorldQuaternion(new THREE.Quaternion());
+    const qd = qv.clone().invert().multiply(_tq).multiply(g.q0.clone().invert());
+    if (qd.w < 0) { qd.x = -qd.x; qd.y = -qd.y; qd.z = -qd.z; qd.w = -qd.w; }
+    const ax = new THREE.Vector3(1, 0, 0).applyQuaternion(g.q0);
+    const want = 2 * Math.atan2(qd.x * ax.x + qd.y * ax.y + qd.z * ax.z, qd.w);
+    const rate = 1.1 / (1 + Math.max(0, g.s) * 8) * (want > 0 ? 0.5 : 1);   // + about this axis lifts the tip spine-first
+    const d = Math.max(-rate * h, Math.min(rate * h, want));
+    if (Math.abs(d) < 1e-5) return;
+    const rot = new THREE.Quaternion().setFromAxisAngle(ax, d);
+    const cur = g.pos0.clone().addScaledVector(g.dir, g.s);
+    const q1 = rot.clone().multiply(g.q0);
+    // the edge sweeps: carve from where each edge point was to where it goes
+    const a = new THREE.Vector3(), c = new THREE.Vector3();
+    let pa = null, pc = null;
+    for (const e of this.edge) {
+      a.copy(e.l).applyQuaternion(g.q0).add(cur); c.copy(e.l).applyQuaternion(q1).add(cur);
+      this.carveSlot(v, a.clone(), c.clone(), true);
+      if (pa) for (const t of [0.33, 0.66]) this.carveSlot(v, pa.clone().lerp(a, t), pc.clone().lerp(c, t), true);
+      pa = a.clone(); pc = c.clone();
+    }
+    g.q0.copy(q1); g.dir.applyQuaternion(rot);
+    g.pos0.copy(cur).addScaledVector(g.dir, -g.s);   // keep the blade where it is, now aimed along the new line
+  }
   driveHeld(h, tvx, tvy, tvz) {
     const b = this.body;
     if (this.guide) { this.guidedStep(h, true); this.placeHand(this.holder.body); return; }
@@ -4783,6 +4941,23 @@ class Machete {
   }
   update(dt) {
     if (this.holder && !this.holder.active) this.drop();
+    const bl = this.blood || 0;
+    if (bl > 0.001) {
+      const mats = this.group.userData.bloodMats;
+      for (const [m, c0] of mats) m.color.copy(c0).lerp(_bloodSteel, Math.min(0.85, bl * 1.4));
+      for (const [m] of mats) m.roughness = 0.42 - Math.min(0.25, bl * 0.4);   // wet
+      this.dripT = (this.dripT || 0) - dt;
+      if (this.dripT <= 0 && !this.guide) {
+        this.dripT = 0.18 + (1 - bl) * 1.4 + Math.random() * 0.3;
+        let low = null;
+        for (const e of this.edge) { const w = this.toWorld(e.l, new THREE.Vector3()); if (!low || w.y < low.y) low = w; }
+        const tip = this.toWorld(new THREE.Vector3(0, 0, MCH.BLADE1), new THREE.Vector3());
+        if (tip.y < low.y) low = tip;
+        spawnDrop(low, new THREE.Vector3(this.body.velocity.x * 0.4, Math.min(0, this.body.velocity.y * 0.4) - 0.05, this.body.velocity.z * 0.4), 0.0028 + bl * 0.0025);
+        this.blood = bl - 0.006;
+      }
+      if (!this.guide) this.blood = Math.max(0, (this.blood || 0) - dt * 0.0025);   // dries
+    }
     this.group.position.copy(this.body.position);
     this.group.quaternion.copy(this.body.quaternion);
   }
