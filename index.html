@@ -2892,6 +2892,227 @@ function addSplat(p, n, size, vel) {
   splatFade.setX(splatNext === 0 ? SPLATS_MAX - 1 : splatNext - 1, 1); splatBorn[splatNext === 0 ? SPLATS_MAX - 1 : splatNext - 1] = simTime;
   splatMesh.instanceMatrix.needsUpdate = true; splatUv.needsUpdate = true; splatMesh.instanceColor.needsUpdate = true; splatFade.needsUpdate = true;
 }
+// ---- floor blood: a simulated film ----
+// The floor around the range carries a grid of 2 cm cells, each holding a depth of blood (mm) and how
+// dry it is. Nothing is a picture: a drop lands as its own volume with a crown of droplets thrown along
+// its impact; blood runs out across the floor until it's a thin film (floor roughness gives ragged
+// edges), dries dark and matt from the outside in, and slowly goes. Anything dragged through it picks
+// blood up, shoves the wet blood ahead of it and lays streaky drag marks; feet leave prints. A shader
+// draws the film from the grid: deep red and glossy where wet, with a raised meniscus at the edges.
+const BF = { X0: -13.5, Z0: -2.5, SIZE: 11, N: 550, MAX: 6 };   // area, cells per side, depth for full colour (mm)
+BF.CS = BF.SIZE / BF.N;
+class BloodField {
+  constructor() {
+    const n = BF.N * BF.N;
+    this.V = new Float32Array(n); this.D = new Float32Array(n);
+    this.hold = new Float32Array(n);   // film thickness the floor holds before blood runs on (rough floor)
+    for (let j = 0; j < BF.N; j++) for (let i = 0; i < BF.N; i++)
+      this.hold[j * BF.N + i] = 0.12 + 0.28 * (0.6 * hash3(i * 0.31, j * 0.29, 1.7) + 0.4 * hash3(i * 0.07, j * 0.07, 4.1));
+    this.B = 22; this.NB = Math.ceil(BF.N / this.B);
+    this.active = new Float32Array(this.NB * this.NB).fill(-1e9);   // last time blood moved in each block
+    this.wet = new Uint8Array(this.NB * this.NB);                   // block has any blood at all
+    this.tex = new THREE.DataTexture(new Uint8Array(n * 4), BF.N, BF.N, THREE.RGBAFormat);
+    this.tex.magFilter = this.tex.minFilter = THREE.LinearFilter; this.tex.needsUpdate = true;
+    this.dirtyTex = false; this.texClock = 0; this.flowClock = 0; this.dryClock = 0;
+    const L = sun.position.clone().normalize();
+    this.mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      uniforms: { field: { value: this.tex }, texel: { value: new THREE.Vector2(1 / BF.N, 1 / BF.N) }, maxD: { value: BF.MAX },
+        lightDir: { value: L }, lightCol: { value: sun.color.clone().multiplyScalar(sun.intensity) }, sky: { value: new THREE.Color('#dff6ff') }, ground: { value: new THREE.Color('#3b4a3f') } },
+      vertexShader: `varying vec2 vUv; varying vec3 vW;
+        void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform sampler2D field; uniform vec2 texel; uniform float maxD; uniform vec3 lightDir, lightCol, sky, ground;
+        varying vec2 vUv; varying vec3 vW;
+        float depthAt(vec2 uv) { float r = texture2D(field, uv).r; return r * r * maxD; }
+        void main() {
+          vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+          vec4 t = texture2D(field, uv);
+          float d = t.r * t.r * maxD;               // mm of blood
+          float a = smoothstep(0.035, 0.22, d);
+          if (a < 0.01) discard;
+          float dry = t.g;
+          // surface from the film's thickness: a raised, rounded edge (meniscus), flat on top
+          float dx = depthAt(uv + vec2(texel.x, 0.0)) - depthAt(uv - vec2(texel.x, 0.0));
+          float dz = depthAt(uv + vec2(0.0, texel.y)) - depthAt(uv - vec2(0.0, texel.y));
+          float slope = 0.9 * (1.0 - 0.6 * dry);
+          vec3 n = normalize(vec3(-dx * slope, 1.0, dz * slope));
+          vec3 v = normalize(cameraPosition - vW);
+          // colour: thin film shows lighter red, deep pools near black-red; drying goes brown and matt
+          vec3 fresh = mix(vec3(0.17, 0.006, 0.004), vec3(0.045, 0.0015, 0.001), smoothstep(0.12, 1.6, d));
+          vec3 old = mix(vec3(0.075, 0.022, 0.015), vec3(0.03, 0.01, 0.007), smoothstep(0.1, 1.5, d));
+          vec3 base = mix(fresh, old, smoothstep(0.05, 0.9, dry));
+          float diff = max(dot(n, lightDir), 0.0);
+          vec3 col = base * (mix(ground, sky, 0.5 + 0.5 * n.y) * 0.45 + lightCol * diff * 0.5);
+          vec3 hv = normalize(lightDir + v);
+          float wet = 1.0 - smoothstep(0.2, 0.85, dry);
+          float spec = pow(max(dot(n, hv), 0.0), mix(18.0, 160.0, wet)) * mix(0.04, 1.4, wet);
+          float fres = pow(1.0 - max(dot(n, v), 0.0), 5.0) * wet;
+          col += lightCol * spec + sky * fres * 0.35;
+          gl_FragColor = vec4(col, a * mix(0.97, 0.88, dry));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(BF.SIZE, BF.SIZE), this.mat);
+    this.mesh.rotation.x = -Math.PI / 2;
+    this.mesh.position.set(BF.X0 + BF.SIZE / 2, 0.0015, BF.Z0 + BF.SIZE / 2);
+    this.mesh.renderOrder = 1; this.mesh.frustumCulled = false;
+    scene.add(this.mesh);
+  }
+  covers(x, y, z) { return y < 0.06 && x > BF.X0 + 0.05 && z > BF.Z0 + 0.05 && x < BF.X0 + BF.SIZE - 0.05 && z < BF.Z0 + BF.SIZE - 0.05; }
+  cell(x, z) { return [Math.floor((x - BF.X0) / BF.CS), Math.floor((z - BF.Z0) / BF.CS)]; }
+  touch(i, j) { const b = ((j / this.B) | 0) * this.NB + ((i / this.B) | 0); this.active[b] = simTime; this.wet[b] = 1; this.dirtyTex = true; }
+  add(i, j, mm) {   // add blood to a cell; fresh blood re-wets dried blood under it
+    if (i < 1 || j < 1 || i >= BF.N - 1 || j >= BF.N - 1 || mm <= 0) return;
+    const o = j * BF.N + i, v = this.V[o];
+    this.D[o] = v > 0 ? this.D[o] * v / (v + mm) : 0;
+    this.V[o] = v + mm;
+    this.touch(i, j);
+  }
+  splat(x, z, mm3, r) {   // a volume spread over a small round patch
+    const [ci, cj] = this.cell(x, z), R = Math.max(1, Math.ceil(r / BF.CS));
+    let wsum = 0;
+    const w = [];
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      const d = Math.hypot(di * BF.CS + (ci + 0.5) * BF.CS + BF.X0 - x, dj * BF.CS + (cj + 0.5) * BF.CS + BF.Z0 - z) / Math.max(r, BF.CS * 0.6);
+      const k = d < 1 ? (1 - d * d) : 0; if (k > 0) { w.push([ci + di, cj + dj, k]); wsum += k; }
+    }
+    const area = BF.CS * BF.CS * 1e6;   // mm^2 per cell
+    for (const [i, j, k] of w) this.add(i, j, mm3 * k / wsum / area);
+  }
+  // a drop hitting the floor: its own volume, plus droplets flung outward along its sideways speed
+  drop(x, z, size, vel) {
+    const vol = 26 * (4 / 3) * Math.PI * (size * 500) ** 3;   // mm^3; each drop stands for more blood than it looks
+    const vh = Math.hypot(vel.x, vel.z), vs = Math.abs(vel.y), sp = Math.hypot(vh, vs);
+    const core = vol * (sp > 3 ? 0.72 : 0.9);
+    this.splat(x, z, core, 0.006 + size * 1.4);
+    if (sp > 1.5) {
+      const n = Math.min(9, 2 + (sp * 1.4 | 0)), ux = vh > 0.05 ? vel.x / vh : 0, uz = vh > 0.05 ? vel.z / vh : 0;
+      for (let k = 0; k < n; k++) {
+        const ang = Math.random() * Math.PI * 2, along = vh > 0.05 ? 0.5 + Math.random() * 1.5 : 0;
+        const dist = (0.012 + Math.random() * 0.03) * (0.5 + sp * 0.12);
+        const dx = Math.cos(ang) * dist + ux * along * dist, dz = Math.sin(ang) * dist + uz * along * dist;
+        this.splat(x + dx, z + dz, (vol - core) / n * (0.4 + Math.random() * 1.2), 0.003 + Math.random() * 0.004);
+      }
+    }
+  }
+  depth(x, z) { const [i, j] = this.cell(x, z); return i < 0 || j < 0 || i >= BF.N || j >= BF.N ? 0 : this.V[j * BF.N + i]; }
+  // take blood up from under a contact (mm^3), only what's still wet
+  pickUp(x, z, r, frac) {
+    const [ci, cj] = this.cell(x, z), R = Math.max(1, Math.ceil(r / BF.CS)), area = BF.CS * BF.CS * 1e6;
+    let got = 0;
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      if (di * di + dj * dj > R * R) continue;
+      const i = ci + di, j = cj + dj; if (i < 1 || j < 1 || i >= BF.N - 1 || j >= BF.N - 1) continue;
+      const o = j * BF.N + i, wetness = Math.max(0, 1 - this.D[o] * 1.5);
+      const t = this.V[o] * frac * wetness; if (t <= 0) continue;
+      this.V[o] -= t; got += t * area; this.touch(i, j);
+    }
+    return got;
+  }
+  // something sliding through wet blood shoves it along ahead of itself
+  push(x, z, r, vx, vz, dt) {
+    const [ci, cj] = this.cell(x, z), R = Math.max(1, Math.ceil(r / BF.CS));
+    const sx = vx * dt / BF.CS, sz = vz * dt / BF.CS, m = Math.hypot(sx, sz); if (m < 0.01) return;
+    const k = Math.min(0.6, m * 0.9);
+    const ox = sx / m, oz = sz / m;
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      if (di * di + dj * dj > R * R) continue;
+      const i = ci + di, j = cj + dj; if (i < 2 || j < 2 || i >= BF.N - 2 || j >= BF.N - 2) continue;
+      const o = j * BF.N + i, mv = this.V[o] * k * Math.max(0, 1 - this.D[o] * 1.6); if (mv <= 0) continue;
+      this.V[o] -= mv;
+      // to the cell ahead, split by direction (bilinear)
+      const ax = Math.abs(ox), az = Math.abs(oz), tx = i + Math.sign(ox), tz = j + Math.sign(oz);
+      this.add(tx, j, mv * ax / (ax + az)); this.add(i, tz, mv * az / (ax + az));
+    }
+  }
+  // drag marks: blood laid along a path in streaks (the surface of what's dragged isn't even)
+  smear(a, b, width, mm3, seed) {
+    const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz); if (len < 1e-4 || mm3 <= 0) return;
+    const ux = dx / len, uz = dz / len, nx = -uz, nz = ux;
+    const steps = Math.max(1, Math.ceil(len / (BF.CS * 0.5))), lanes = Math.max(2, Math.ceil(width / (BF.CS * 0.7)));
+    const per = mm3 / (steps * lanes) / (BF.CS * BF.CS * 1e6);
+    for (let s1 = 0; s1 < steps; s1++) for (let l = 0; l < lanes; l++) {
+      const off = (l / (lanes - 1) - 0.5) * width;
+      const streak = 0.15 + 1.7 * Math.pow(hash3(Math.round(off / BF.CS * 1.3) + seed, seed * 0.37, 2.3), 2.2);   // the same lanes stay heavy along the drag
+      const edge = 1 - Math.pow(Math.abs(off) / (width * 0.5 + 1e-6), 3);
+      const t = (s1 + Math.random()) / steps;
+      const [i, j] = this.cell(a.x + dx * t + nx * off, a.z + dz * t + nz * off);
+      this.add(i, j, per * streak * Math.max(0, edge) * (0.7 + Math.random() * 0.6));
+    }
+  }
+  // a footprint: heel and ball of the foot, toes, from what the sole is carrying
+  footprint(x, z, fx, fz, mm3) {
+    const lx = -fz, lz = fx;
+    const part = (u, v, r, w) => this.splat(x + fx * u + lx * v, z + fz * u + lz * v, mm3 * w, r);
+    part(-0.085, 0, 0.032, 0.3); part(0.045, 0.004, 0.04, 0.42); part(-0.02, -0.012, 0.022, 0.1);
+    for (let t = 0; t < 4; t++) part(0.11 + (t === 0 ? 0.008 : 0), -0.02 + t * 0.014, 0.009, 0.045);
+  }
+  // runs every frame: flow where blood is fresh, drying everywhere, texture upload a few times a second
+  update(dt) {
+    this.flowClock += dt;
+    if (this.flowClock >= 1 / 30) {
+      this.flowClock = 0;
+      const N = BF.N, V = this.V, D = this.D, H = this.hold;
+      for (let b = 0; b < this.active.length; b++) {
+        if (simTime - this.active[b] > 25) continue;   // nothing fresh here: settled
+        const bi = (b % this.NB) * this.B, bj = ((b / this.NB) | 0) * this.B;
+        let moved = false;
+        for (let j = Math.max(1, bj); j < Math.min(N - 1, bj + this.B); j++) for (let i = Math.max(1, bi); i < Math.min(N - 1, bi + this.B); i++) {
+          const o = j * N + i, ex = V[o] - H[o] * (1 + D[o] * 6);
+          if (ex <= 0.02) continue;
+          // run out to lower neighbours: more to whichever is emptier
+          for (const q of [o - 1, o + 1, o - N, o + N]) {
+            const exq = V[q] - H[q];
+            const f = (ex - Math.max(0, exq)) * 0.11;
+            if (f > 0.002) { V[o] -= f; V[q] += f; if (D[q] > 0 && V[q] > 0) D[q] *= 0.9; moved = true; }
+          }
+        }
+        if (moved) { this.active[b] = Math.max(this.active[b], simTime - 20); this.dirtyTex = true; }
+        // blood that ran over into a neighbouring block wakes it
+        if (moved) for (const nb of [b - 1, b + 1, b - this.NB, b + this.NB]) if (nb >= 0 && nb < this.active.length && simTime - this.active[nb] > 20) { this.active[nb] = simTime - 20; this.wet[nb] = 1; }
+      }
+    }
+    // drying: dark and matt after a minute, gone after a few
+    this.dryClock += dt;
+    if (this.dryClock >= 0.5) {
+      const step = this.dryClock; this.dryClock = 0;
+      const N = BF.N, V = this.V, D = this.D;
+      for (let b = 0; b < this.wet.length; b++) {
+        if (!this.wet[b]) continue;
+        const bi = (b % this.NB) * this.B, bj = ((b / this.NB) | 0) * this.B;
+        let any = false;
+        for (let j = bj; j < Math.min(N, bj + this.B); j++) for (let i = bi; i < Math.min(N, bi + this.B); i++) {
+          const o = j * N + i; if (V[o] <= 0) continue;
+          any = true;
+          D[o] += step / (35 + V[o] * 12);                         // thin film dries first, pools last
+          if (D[o] > 3) V[o] *= Math.exp(-step / 35);             // old dried blood goes
+          if (V[o] < 0.004) { V[o] = 0; D[o] = 0; }
+        }
+        if (!any) this.wet[b] = 0;
+      }
+      this.dirtyTex = true;
+    }
+    this.texClock += dt;
+    if (this.dirtyTex && this.texClock > 0.08) {
+      this.texClock = 0; this.dirtyTex = false;
+      const data = this.tex.image.data, N = BF.N, V = this.V, D = this.D;
+      for (let b = 0; b < this.wet.length; b++) {
+        if (!this.wet[b] && simTime - this.active[b] > 30) continue;
+        const bi = (b % this.NB) * this.B, bj = ((b / this.NB) | 0) * this.B;
+        for (let j = bj; j < Math.min(N, bj + this.B); j++) for (let i = bi; i < Math.min(N, bi + this.B); i++) {
+          const o = j * N + i, k = o * 4;
+          data[k] = Math.min(255, Math.sqrt(Math.min(1, V[o] / BF.MAX)) * 255 + 0.5);
+          data[k + 1] = Math.min(255, Math.min(1, D[o]) * 255);
+          data[k + 3] = 255;
+        }
+      }
+      this.tex.needsUpdate = true;
+    }
+  }
+  clear() { this.V.fill(0); this.D.fill(0); this.wet.fill(0); this.active.fill(-1e9); this.tex.image.data.fill(0); this.tex.needsUpdate = true; }
+}
+const bloodField = new BloodField();
 // ---- pools ----
 // Drops that land on a floor don't each leave a splat: they collect into pools that grow with the blood
 // that reaches them (one instance however much lands), merge when they touch, and dry darker and fade
@@ -3034,7 +3255,7 @@ function gatherSurfaceContacts() {
   }
 }
 const carriers = new WeakMap();
-let footCarry = 0, footDist = 0, footSide = 1, poolClock = 0;
+let footCarry = 0, footField = 0, footDist = 0, footSide = 1, poolClock = 0;
 function updateBloodDrag(dt) {
   gatherSurfaceContacts();
   const bodies = [];
@@ -3046,6 +3267,33 @@ function updateBloodDrag(dt) {
     const ct = surfaceContacts.get(b);
     if (!ct) { st.last = null; continue; }                 // not touching anything: nothing to smear on
     const cp = ct.p;
+    if (ct.n.y > 0.7 && bloodField.covers(cp.x, cp.y, cp.z)) {
+      const r = e.radius ? Math.min(0.06, e.radius) : 0.045;
+      if (bloodField.depth(cp.x, cp.z) > 0.05) {
+        if (sp > 0.03) { st.carry = Math.min(20000, st.carry + bloodField.pickUp(cp.x, cp.z, r, Math.min(0.5, sp * dt * 2.5 + 0.02))); bloodField.push(cp.x, cp.z, r, b.velocity.x, b.velocity.z, dt); }
+        st.paint -= dt;
+        if (e.vol && st.paint <= 0) {   // lying in it stains the skin where it touches
+          st.paint = 0.25;
+          e.vol.object.updateWorldMatrix(true, false);
+          e.vol.paintBlood(_v3.copy(cp).applyMatrix4(_dmgInv.copy(e.vol.object.matrixWorld).invert()), 0.05, 0.35);
+        }
+      }
+      st.seed ??= Math.random() * 100;
+      if (st.carry > 2 && sp > 0.04) {
+        if (!st.last) st.last = cp.clone();
+        const d = st.last.distanceTo(cp);
+        if (d > BF.CS) {
+          const width = Math.max(0.03, Math.min(0.12, r * 2) * (1.1 - Math.min(0.5, sp * 0.2)));
+          const amt = st.carry * (1 - Math.exp(-d * 4.5));
+          bloodField.smear(st.last, cp, width, amt, st.seed);
+          st.carry -= amt;
+          if (sp > 1.1 && st.carry > 300 && Math.random() < 0.5)   // fast: flicks droplets ahead
+            for (let i = 0; i < 2; i++) spawnDrop(_v3.copy(cp).addScaledVector(ct.n, 0.01), _v4.set(b.velocity.x * (0.6 + Math.random() * 0.5), 0.6 + Math.random(), b.velocity.z * (0.6 + Math.random() * 0.5)), 0.0025 + Math.random() * 0.003);
+          st.last.copy(cp);
+        }
+      } else st.last = cp.clone();
+      continue;
+    }
     const pl = ct.n.y > 0.7 ? poolAt(cp.x, cp.y, cp.z, 0.03) : null;
     if (pl) {
       if (sp > 0.03) {
@@ -3086,7 +3334,19 @@ function updateBloodDrag(dt) {
     } else st.last = cp.clone();
   }
   // your feet
-  if (grounded) {
+  if (grounded && bloodField.covers(player.position.x, player.position.y, player.position.z)) {
+    const sp = Math.hypot(player.velocity.x, player.velocity.z), px = player.position.x, pz = player.position.z;
+    if (bloodField.depth(px, pz) > 0.08) footField = Math.min(4000, footField + bloodField.pickUp(px, pz, 0.07, 0.08) * 0.6);
+    else if (footField > 40 && sp > 0.5) {
+      footDist += sp * dt;
+      if (footDist > 0.55) {
+        footDist = 0; footSide = -footSide;
+        const fx = player.velocity.x / sp, fz = player.velocity.z / sp;
+        bloodField.footprint(px + fz * 0.1 * footSide, pz - fx * 0.1 * footSide, fx, fz, footField * 0.3);
+        footField *= 0.7;
+      }
+    }
+  } else if (grounded) {
     const sp = Math.hypot(player.velocity.x, player.velocity.z), pl = poolAt(player.position.x, player.position.y, player.position.z, 0.15);
     if (pl) { footCarry = Math.min(8, footCarry + Math.min(pl.vol * 0.02, 0.4)); pl.vol -= Math.min(pl.vol * 0.02, 0.4); }
     else if (footCarry > 0.2 && sp > 0.5) {
@@ -3151,6 +3411,7 @@ function updateBlood(dt) {
   flushRR++;
   updateChunks(dt);
   updateBloodDrag(dt);
+  bloodField.update(dt);
   for (let i = drops.length - 1; i >= 0; i--) {
     const d = drops[i];
     d.v.y -= GRAVITY * dt;
@@ -3175,7 +3436,8 @@ function updateBlood(dt) {
     if (_dropRes.hasHit) {
       if (_dropRes.body.mass === 0) {
         const hp = _dropRes.hitPointWorld, hn = _dropRes.hitNormalWorld;
-        if (hn.y > 0.8) addToPool(_v3.set(hp.x, hp.y, hp.z), _v4.set(hn.x, hn.y, hn.z), (d.s / 0.005) ** 3);
+        if (hn.y > 0.8 && bloodField.covers(hp.x, hp.y, hp.z)) bloodField.drop(hp.x, hp.z, d.s, d.v);
+        else if (hn.y > 0.8) addToPool(_v3.set(hp.x, hp.y, hp.z), _v4.set(hn.x, hn.y, hn.z), (d.s / 0.005) ** 3);
         else addSplat(_v3.set(hp.x, hp.y, hp.z), _v4.set(hn.x, hn.y, hn.z), d.s * (3 + Math.random() * 2.5), d.v);
       }
       drops.splice(i, 1);
@@ -3206,6 +3468,7 @@ function clearBlood() {
   splatMesh.count = 0; splatNext = 0;
   while (pools.length) removePool(pools[pools.length - 1]);
   smearMesh.count = 0; smearNext = 0;
+  bloodField.clear(); footField = 0;
   poolCells.clear(); footCarry = 0;
   while (chunks.length) removeChunk(chunks[0]);
 }
@@ -5031,7 +5294,7 @@ function resetRange() {
 }
 
 // debug handle for console tinkering
-window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get pools() { return pools; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, npc, machete, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
+window.vaultyard = { player, hands, world, keys, get pistol() { return pistol; }, get shotgun() { return shotgun; }, resetRange, resetButtons, actx, damageSphere, ammoPouch, fireBullet, THREE, get splats() { return splatMesh.count; }, get pools() { return pools; }, get drops() { return dropCount; }, get chunks() { return chunks.length; }, npc, machete, bloodField, look: (y, p = 0) => { yaw = y; pitch = p; }, lock: (v) => { locked = v; } };
 
 // ---------- loop ----------
 const clock = new THREE.Clock();

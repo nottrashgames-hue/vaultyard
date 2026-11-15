@@ -57,3 +57,6 @@ Surface blood (bleed points, trickles, hanging drops) is checked against the fle
 - Around anything a blade has cut, leftover flesh has to be well over a voxel thick to hold a part together, so angled cuts don't leave stray connecting threads.
 - A limb (or the neck) cut most of the way through but not off hangs from what's left on a loose joint and flops at the cut; cut the rest and it drops.
 - Stumps spurt from the artery with each heartbeat; the heart beats faster and weaker as blood is lost and stops when he dies. Gunshots throw a fine mist out of the exit wound. The machete gets bloodier the more it cuts, drips from its lowest point and slowly dries.
+
+### Procedural floor blood
+Around the range the floor carries a simulated blood film: a 2 cm grid holding the depth of blood and how dry it is, drawn by a shader (deep red and glossy where wet, a rounded meniscus at the edges, brown and matt as it dries). Nothing is a stamped texture. A drop lands as its own volume with droplets thrown out along its impact; blood runs out across the floor until it's a thin film, with ragged edges from the floor's roughness; it dries from the thin edges inward and eventually goes. Anything dragged through it picks blood up, pushes the wet blood ahead and lays streaky drag marks; feet leave heel, ball and toe prints.
